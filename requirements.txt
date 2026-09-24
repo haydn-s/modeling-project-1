@@ -1,0 +1,33 @@
+# Python 3.14
+
+# Data processing and storage
+numpy==2.5.3
+pandas==3.0.6
+pyarrow==25.0.1
+
+# Visualization
+matplotlib==3.11.2
+seaborn==0.13.2
+
+# Machine learning and statistical modeling
+scikit-learn==1.9.1
+statsmodels==0.15.0
+xgboost==3.4.1
+
+# Time-series forecasting
+prophet==1.4.0
+
+# Hyperparameter optimization
+optuna==5.0.0
+
+# Data access and configuration
+python-dotenv==1.2.3
+requests==2.34.2
+
+# Interactive development
+ipykernel==7.3.0
+
+# Testing and code quality
+pre-commit==4.6.2
+pytest==9.1.1
+ruff==0.16.8
