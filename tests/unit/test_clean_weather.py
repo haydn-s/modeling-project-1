@@ -6,6 +6,7 @@ import pytest
 from rdu_temperature.pipeline import schema
 from rdu_temperature.pipeline.clean_weather import (
     EconetNormalizer,
+    HourlyGrid,
     IemAsosNormalizer,
     NoaaGhcnhNormalizer,
     OpenMeteoNormalizer,
@@ -172,3 +173,91 @@ def test_every_normalizer_emits_identity_columns_first(
     result = OpenMeteoNormalizer(registry).normalize(frame)
 
     assert tuple(result.columns[:3]) == schema.IDENTITY_COLUMNS
+
+
+@pytest.fixture
+def grid() -> HourlyGrid:
+    return HourlyGrid.from_config(
+        {
+            "history": {
+                "start_utc": "2026-01-01T00:00:00Z",
+                "end_utc": "2026-01-01T04:00:00Z",
+            }
+        }
+    )
+
+
+def test_grid_is_half_open(grid: HourlyGrid) -> None:
+    assert grid.index.tolist() == [
+        pd.Timestamp("2026-01-01T00:00Z"),
+        pd.Timestamp("2026-01-01T01:00Z"),
+        pd.Timestamp("2026-01-01T02:00Z"),
+        pd.Timestamp("2026-01-01T03:00Z"),
+    ]
+
+
+def test_alignment_floors_the_hour_and_keeps_the_last_reading(
+    grid: HourlyGrid,
+) -> None:
+    frame = pd.DataFrame(
+        {
+            schema.SOURCE: ["iem_asos"] * 3,
+            schema.STATION_ID: ["KRDU"] * 3,
+            schema.TIMESTAMP_UTC: pd.to_datetime(
+                ["2026-01-01T00:15Z", "2026-01-01T00:35Z", "2026-01-01T00:55Z"],
+                utc=True,
+            ),
+            schema.TEMPERATURE_C: [10.0, 11.0, 12.0],
+            # The final report omits the dew point, so the earlier one stands.
+            schema.DEWPOINT_C: [5.0, 6.0, None],
+        }
+    )
+
+    aligned = grid.align(frame, "iem_asos")
+    first = aligned.iloc[0]
+
+    assert len(aligned) == 4
+    assert first[schema.TIMESTAMP_UTC] == pd.Timestamp("2026-01-01T00:00Z")
+    assert first[schema.TEMPERATURE_C] == 12.0
+    assert first[schema.DEWPOINT_C] == 6.0
+    assert aligned[schema.TEMPERATURE_C].isna().tolist() == [False, True, True, True]
+
+
+def test_alignment_gives_every_station_every_hour(grid: HourlyGrid) -> None:
+    frame = pd.DataFrame(
+        {
+            schema.SOURCE: ["iem_asos"] * 2,
+            schema.STATION_ID: ["KRDU", "KTTA"],
+            schema.TIMESTAMP_UTC: pd.to_datetime(
+                ["2026-01-01T00:51Z", "2026-01-01T02:51Z"], utc=True
+            ),
+            schema.TEMPERATURE_C: [10.0, 20.0],
+        }
+    )
+
+    aligned = grid.align(frame, "iem_asos")
+
+    assert len(aligned) == 8
+    assert aligned[schema.STATION_ID].value_counts().to_dict() == {"KRDU": 4, "KTTA": 4}
+    assert aligned[schema.SOURCE].unique().tolist() == ["iem_asos"]
+    rdu = aligned[aligned[schema.STATION_ID] == "KRDU"]
+    assert rdu[schema.TEMPERATURE_C].tolist()[0] == 10.0
+    assert rdu[schema.TEMPERATURE_C].isna().sum() == 3
+
+
+def test_alignment_excludes_observations_outside_the_grid(grid: HourlyGrid) -> None:
+    frame = pd.DataFrame(
+        {
+            schema.SOURCE: ["iem_asos"] * 2,
+            schema.STATION_ID: ["KRDU"] * 2,
+            schema.TIMESTAMP_UTC: pd.to_datetime(
+                ["2026-01-01T01:51Z", "2026-01-01T04:51Z"], utc=True
+            ),
+            schema.TEMPERATURE_C: [10.0, 99.0],
+        }
+    )
+
+    aligned = grid.align(frame, "iem_asos")
+
+    assert len(aligned) == 4
+    assert 99.0 not in aligned[schema.TEMPERATURE_C].dropna().tolist()

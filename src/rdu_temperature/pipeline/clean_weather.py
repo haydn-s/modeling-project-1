@@ -78,6 +78,68 @@ class StationRegistry:
         return values.astype("string").str.strip().map(self.aliases[namespace])
 
 
+@dataclass(frozen=True)
+class HourlyGrid:
+    """The half-open hourly UTC index that every aligned source is placed on."""
+
+    start: pd.Timestamp
+    end: pd.Timestamp
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any]) -> HourlyGrid:
+        history = config["history"]
+        return cls(
+            start=pd.Timestamp(history["start_utc"]).tz_convert("UTC"),
+            end=pd.Timestamp(history["end_utc"]).tz_convert("UTC"),
+        )
+
+    @classmethod
+    def from_path(cls, config_path: Path) -> HourlyGrid:
+        with config_path.open(encoding="utf-8") as config_file:
+            return cls.from_config(json.load(config_file))
+
+    @property
+    def index(self) -> pd.DatetimeIndex:
+        return pd.date_range(
+            self.start, self.end, freq="h", inclusive="left", name=schema.TIMESTAMP_UTC
+        )
+
+    def align(self, frame: pd.DataFrame, source_name: str) -> pd.DataFrame:
+        """Place one normalized source on the hourly grid.
+
+        Observation times are floored, so the 23:51 report describes hour 23.
+        Where a station reports more than once in an hour the last non-missing
+        reading of each variable wins, which keeps corrected reports and the
+        routine report closest to the top of the next hour. Every station then
+        carries every hour, with absent hours left missing rather than filled.
+        """
+        measurements = [
+            column for column in frame.columns if column in schema.MEASUREMENT_COLUMNS
+        ]
+        floored = frame.assign(
+            **{
+                schema.TIMESTAMP_UTC: pd.to_datetime(
+                    frame[schema.TIMESTAMP_UTC], utc=True
+                ).dt.floor("h")
+            }
+        ).sort_values(schema.TIMESTAMP_UTC, kind="stable")
+        collapsed = floored.groupby(
+            [schema.STATION_ID, schema.TIMESTAMP_UTC], as_index=False
+        )[measurements].last()
+
+        stations = sorted(collapsed[schema.STATION_ID].unique())
+        panel = pd.MultiIndex.from_product(
+            [stations, self.index], names=[schema.STATION_ID, schema.TIMESTAMP_UTC]
+        )
+        aligned = (
+            collapsed.set_index([schema.STATION_ID, schema.TIMESTAMP_UTC])
+            .reindex(panel)
+            .reset_index()
+        )
+        aligned.insert(0, schema.SOURCE, source_name)
+        return aligned
+
+
 class SourceNormalizer(ABC):
     """Shared normalization lifecycle for one raw source."""
 
@@ -111,6 +173,9 @@ class SourceNormalizer(ABC):
 
     def load(self, input_dir: Path) -> pd.DataFrame:
         return self.normalize(self.read(input_dir))
+
+    def align(self, input_dir: Path, grid: HourlyGrid) -> pd.DataFrame:
+        return grid.align(self.load(input_dir), self.source_name)
 
     def _apply_variables(
         self, frame: pd.DataFrame, variables: VariableMap
