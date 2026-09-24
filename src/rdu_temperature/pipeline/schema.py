@@ -46,6 +46,20 @@ MEASUREMENT_COLUMNS: tuple[str, ...] = (
 
 CANONICAL_COLUMNS: tuple[str, ...] = (*IDENTITY_COLUMNS, *MEASUREMENT_COLUMNS)
 
+# The target series is derived rather than observed, so it carries its own
+# columns: the local clock hour the project is scored on, and the source each
+# reading came from.
+TIMESTAMP_LOCAL = "timestamp_local"
+TEMPERATURE_SOURCE = "temperature_source"
+
+TARGET_COLUMNS: tuple[str, ...] = (
+    TIMESTAMP_UTC,
+    TIMESTAMP_LOCAL,
+    STATION_ID,
+    TEMPERATURE_C,
+    TEMPERATURE_SOURCE,
+)
+
 # METAR sky cover abbreviations expressed as a percentage of the sky. Reported
 # layers are cumulative, so a layer's code describes total cover up to and
 # including that layer. Ranged codes use the midpoint of their okta range.

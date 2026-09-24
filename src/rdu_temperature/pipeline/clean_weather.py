@@ -332,6 +332,69 @@ class EconetNormalizer(SourceNormalizer):
         return self._finalize(wide, columns, wide[schema.STATION_ID])
 
 
+TARGET_STATION_ID = "KRDU"
+# GHCNh first: it records Celsius directly and carries a quality code. IEM is
+# the same KRDU observation rounded through whole degrees Fahrenheit.
+TARGET_SOURCE_PRIORITY: tuple[str, ...] = ("noaa_ghcnh", "iem_asos")
+
+
+@dataclass(frozen=True)
+class TargetSeries:
+    """The hourly RDU temperature the project predicts.
+
+    GHCNh and IEM publish the same KRDU observation and agree to 0.028 degrees
+    Celsius on average across the ingestion window, so the second source is a
+    gap filler rather than an independent reading. Hours neither source covers
+    are left missing: the target is a measurement, and an invented value would
+    be scored as though it were one.
+
+    Timestamps are reported in UTC and in local time. The forecast window falls
+    entirely inside daylight saving time, but the training window spans several
+    transitions, so local time is carried alongside UTC rather than replacing
+    it.
+    """
+
+    station_id: str = TARGET_STATION_ID
+    local_timezone: str = "America/New_York"
+    priority: tuple[str, ...] = TARGET_SOURCE_PRIORITY
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any]) -> TargetSeries:
+        return cls(local_timezone=config["history"]["local_timezone"])
+
+    def build(
+        self, aligned: Mapping[str, pd.DataFrame], grid: HourlyGrid
+    ) -> pd.DataFrame:
+        """Coalesce the configured sources into one series over the grid."""
+        values = pd.Series(pd.NA, index=grid.index, dtype="Float64")
+        origins = pd.Series(pd.NA, index=grid.index, dtype="string")
+
+        for source_name in self.priority:
+            frame = aligned.get(source_name)
+            if frame is None:
+                continue
+            station = frame.loc[frame[schema.STATION_ID] == self.station_id]
+            candidate = (
+                station.set_index(schema.TIMESTAMP_UTC)[schema.TEMPERATURE_C]
+                .reindex(grid.index)
+                .astype("Float64")
+            )
+            unfilled = values.isna() & candidate.notna()
+            values = values.mask(unfilled, candidate)
+            origins = origins.mask(unfilled, source_name)
+
+        result = pd.DataFrame(
+            {
+                schema.TIMESTAMP_LOCAL: grid.index.tz_convert(self.local_timezone),
+                schema.STATION_ID: self.station_id,
+                schema.TEMPERATURE_C: values.astype("float64"),
+                schema.TEMPERATURE_SOURCE: origins,
+            },
+            index=grid.index,
+        ).reset_index()
+        return result.loc[:, list(schema.TARGET_COLUMNS)]
+
+
 NORMALIZERS: tuple[type[SourceNormalizer], ...] = (
     NoaaGhcnhNormalizer,
     IemAsosNormalizer,

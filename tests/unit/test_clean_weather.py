@@ -11,6 +11,7 @@ from rdu_temperature.pipeline.clean_weather import (
     NoaaGhcnhNormalizer,
     OpenMeteoNormalizer,
     StationRegistry,
+    TargetSeries,
 )
 
 CONFIG = {
@@ -261,3 +262,65 @@ def test_alignment_excludes_observations_outside_the_grid(grid: HourlyGrid) -> N
 
     assert len(aligned) == 4
     assert 99.0 not in aligned[schema.TEMPERATURE_C].dropna().tolist()
+
+
+def _aligned(source: str, temperatures: list[float | None]) -> pd.DataFrame:
+    hours = pd.date_range("2026-01-01T00:00Z", periods=4, freq="h")
+    return pd.DataFrame(
+        {
+            schema.SOURCE: source,
+            schema.STATION_ID: "KRDU",
+            schema.TIMESTAMP_UTC: hours,
+            schema.TEMPERATURE_C: temperatures,
+        }
+    )
+
+
+def test_target_prefers_the_first_source_and_fills_from_the_second(
+    grid: HourlyGrid,
+) -> None:
+    aligned = {
+        "noaa_ghcnh": _aligned("noaa_ghcnh", [10.0, None, 12.0, None]),
+        "iem_asos": _aligned("iem_asos", [10.1, 11.1, None, None]),
+    }
+
+    target = TargetSeries().build(aligned, grid)
+
+    assert target[schema.TEMPERATURE_C].tolist()[:3] == [10.0, 11.1, 12.0]
+    origins = target[schema.TEMPERATURE_SOURCE]
+    assert origins.dropna().tolist() == ["noaa_ghcnh", "iem_asos", "noaa_ghcnh"]
+    assert origins.isna().tolist() == [False, False, False, True]
+
+
+def test_target_leaves_uncovered_hours_missing(grid: HourlyGrid) -> None:
+    aligned = {"noaa_ghcnh": _aligned("noaa_ghcnh", [10.0, None, None, None])}
+
+    target = TargetSeries().build(aligned, grid)
+
+    assert len(target) == 4
+    assert target[schema.TEMPERATURE_C].isna().tolist() == [False, True, True, True]
+    assert target[schema.TEMPERATURE_SOURCE].isna().sum() == 3
+
+
+def test_target_reports_both_utc_and_local_time(grid: HourlyGrid) -> None:
+    aligned = {"noaa_ghcnh": _aligned("noaa_ghcnh", [10.0, 11.0, 12.0, 13.0])}
+
+    target = TargetSeries().build(aligned, grid)
+
+    assert list(target.columns) == list(schema.TARGET_COLUMNS)
+    assert target[schema.TIMESTAMP_UTC].iloc[0] == pd.Timestamp("2026-01-01T00:00Z")
+    # January is standard time at RDU, five hours behind UTC.
+    local = target[schema.TIMESTAMP_LOCAL].iloc[0]
+    assert local.strftime("%Y-%m-%d %H:%M %Z") == "2025-12-31 19:00 EST"
+
+
+def test_target_ignores_other_stations(grid: HourlyGrid) -> None:
+    frame = _aligned("noaa_ghcnh", [10.0, 11.0, 12.0, 13.0])
+    other = frame.assign(**{schema.STATION_ID: "KTTA", schema.TEMPERATURE_C: 99.0})
+
+    target = TargetSeries().build(
+        {"noaa_ghcnh": pd.concat([frame, other], ignore_index=True)}, grid
+    )
+
+    assert 99.0 not in target[schema.TEMPERATURE_C].tolist()
+    assert target[schema.STATION_ID].unique().tolist() == ["KRDU"]
