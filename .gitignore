@@ -3,3 +3,5 @@
 __pycache__/
 *.py[cod]
 
+# Generated datasets
+data/raw/**/*.csv*

@@ -101,11 +101,68 @@ Use `!` before the colon for a breaking change, or add a `BREAKING CHANGE:` foot
 
 ## Data sources
 
-To be completed.
+The initial ingestion window is September 17, 2021 at 12:00 a.m. through
+September 16, 2026 at 11:59 p.m. in `America/New_York`. The equivalent UTC
+interval is `[2021-09-17T04:00:00Z, 2026-09-17T04:00:00Z)`, which prevents
+forecast-period information from entering the training data.
+
+The pipeline uses four complementary sources:
+
+- NOAA GHCN-hourly for quality-controlled RDU and surrounding airport-station
+  observations
+- NC State ECONet for nearby research-grade, non-airport observations
+- Open-Meteo ERA5-Seamless for a consistent gridded regional baseline. It uses
+  ERA5-Land for higher-resolution temperature and humidity, complemented by ERA5
+  for precipitation, pressure, clouds, wind, and solar radiation.
+- Iowa Environmental Mesonet for a convenient METAR cross-check
+
+Five years is the initial analysis window. The project may expand this to ten
+years later to evaluate whether the additional annual cycles improve model
+performance.
+
+### Deferred: forecast covariates
+
+Numerical weather prediction archives encode each run's initialization time in
+its file path, so a run initialized before the cutoff can legitimately supply
+predicted covariates for the forecast period. NOAA GFS (0.25 degree, 384-hour
+lead, archived from 2021-01-01), NOAA GEFS, and ECMWF IFS and AIFS (360-hour
+lead, archived from 2023-01-18) each cover the full target window from the
+2026-09-16 12Z run. GFS is the strongest candidate because its archive aligns
+with this project's 2021 ingestion window, which is what makes it possible to
+train on matched forecast and observation pairs.
+
+This is deferred. The current approach uses observations only.
+
+Open-Meteo is not a safe substitute. Its archive endpoint returns ERA5
+reanalysis, and its previous-runs endpoint returns a `temperature_2m` series
+that is analysis assimilating observations. The `previous_dayN` series are
+genuine forecasts, but their lead rolls with valid time, so late-window values
+come from runs initialized inside the forecast period.
 
 ## Data pipeline
 
-To be completed.
+Copy `.env.example` to `.env`, then add the CLOUDS API hash associated with your
+NC State Climate Office account. Run all ingestion sources from the repository
+root:
+
+```bash
+PYTHONPATH=src python -m rdu_temperature.pipeline.ingest_weather
+```
+
+Run one or more public sources without an ECONet credential by repeating
+`--source`:
+
+```bash
+PYTHONPATH=src python -m rdu_temperature.pipeline.ingest_weather \
+  --source noaa-ghcnh \
+  --source open-meteo \
+  --source iem-asos
+```
+
+Each source writes a separate timestamped CSV beneath `data/raw/`. Existing
+files are protected unless `--overwrite` is supplied. Station selections,
+variables, the model version, and the exact data cutoff are maintained in
+`config/weather_sources.json`.
 
 ## Modeling approach
 
