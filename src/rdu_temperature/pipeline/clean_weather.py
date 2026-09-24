@@ -11,6 +11,7 @@ class handles reading, station identity, and column ordering.
 
 from __future__ import annotations
 
+import argparse
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
@@ -21,6 +22,7 @@ from typing import Any, ClassVar
 import pandas as pd
 
 from rdu_temperature.pipeline import schema
+from rdu_temperature.pipeline.quality import Screener
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "weather_sources.json"
@@ -423,3 +425,86 @@ NORMALIZERS: tuple[type[SourceNormalizer], ...] = (
     OpenMeteoNormalizer,
     EconetNormalizer,
 )
+
+
+class WeatherCleaningApp:
+    """Load configuration and run every cleaning stage end to end."""
+
+    panel_filename = "hourly_panel.parquet"
+    target_filename = "rdu_hourly_target.parquet"
+    report_filename = "screening_report.csv"
+
+    def __init__(self, config_path: Path, input_dir: Path, output_dir: Path) -> None:
+        with config_path.open(encoding="utf-8") as config_file:
+            self.config = json.load(config_file)
+        self.registry = StationRegistry.from_config(self.config)
+        self.grid = HourlyGrid.from_config(self.config)
+        self.target = TargetSeries.from_config(self.config)
+        self.input_dir = input_dir
+        self.output_dir = output_dir
+
+    def run(self, *, overwrite: bool = False) -> dict[str, Path]:
+        outputs = {
+            "panel": self.output_dir / self.panel_filename,
+            "target": self.output_dir / self.target_filename,
+            "report": self.output_dir / self.report_filename,
+        }
+        existing = [path for path in outputs.values() if path.exists()]
+        if existing and not overwrite:
+            raise FileExistsError(
+                f"{existing[0]} already exists; pass --overwrite to replace it."
+            )
+
+        aligned: dict[str, pd.DataFrame] = {}
+        for normalizer in NORMALIZERS:
+            print(f"Normalizing {normalizer.source_name}...", flush=True)
+            aligned[normalizer.source_name] = normalizer(self.registry).align(
+                self.input_dir, self.grid
+            )
+
+        print("Screening...", flush=True)
+        screened = Screener().screen(pd.concat(aligned.values(), ignore_index=True))
+        print(f"Masked {screened.masked} reading(s).", flush=True)
+
+        # The target is built from screened readings, not the raw alignment.
+        by_source = dict(tuple(screened.frame.groupby(schema.SOURCE, sort=False)))
+        target = self.target.build(by_source, self.grid)
+        covered = target[schema.TEMPERATURE_C].notna()
+        print(
+            f"Target covers {covered.sum():,} of {len(target):,} hours "
+            f"({covered.mean() * 100:.2f}%).",
+            flush=True,
+        )
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        _write(screened.frame.to_parquet, outputs["panel"])
+        _write(target.to_parquet, outputs["target"])
+        _write(
+            lambda path: screened.report.to_csv(path, index=False), outputs["report"]
+        )
+        for name, path in outputs.items():
+            print(f"Wrote {name}: {path}", flush=True)
+        return outputs
+
+
+def _write(writer: Callable[[Path], Any], path: Path) -> None:
+    """Write through a temporary file so a failure cannot truncate the output."""
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    writer(temporary_path)
+    temporary_path.replace(path)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--input-dir", type=Path, default=DEFAULT_INPUT_DIR)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--overwrite", action="store_true")
+    args = parser.parse_args()
+
+    app = WeatherCleaningApp(args.config, args.input_dir, args.output_dir)
+    app.run(overwrite=args.overwrite)
+
+
+if __name__ == "__main__":
+    main()

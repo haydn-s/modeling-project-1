@@ -164,6 +164,48 @@ files are protected unless `--overwrite` is supplied. Station selections,
 variables, the model version, and the exact data cutoff are maintained in
 `config/weather_sources.json`.
 
+## Data cleaning
+
+Run the cleaning pipeline from the repository root once ingestion has finished:
+
+```bash
+PYTHONPATH=src python -m rdu_temperature.pipeline.clean_weather
+```
+
+Existing outputs are protected unless `--overwrite` is supplied. The run writes
+three files beneath `data/processed/`:
+
+- `hourly_panel.parquet`: every source and station on one hourly grid, in a
+  single column vocabulary and a single set of units
+- `rdu_hourly_target.parquet`: the hourly RDU temperature the project predicts
+- `screening_report.csv`: what quality screening masked, by rule and station
+
+Cleaning runs in five stages. Sources are normalized onto the canonical schema
+in `schema.py`, aligned to the hourly grid, screened for implausible readings,
+and coalesced into the target series, which is then written with the panel.
+
+### Decisions worth knowing
+
+- **Observation times are floored.** The 23:51 report describes hour 23. Where
+  a station reports more than once an hour, the last non-missing reading of
+  each variable wins. Averaging was rejected because wind direction does not
+  average linearly.
+- **The target is a measurement, never an estimate.** RDU temperature comes
+  from GHCNh, with IEM filling the hours GHCNh omits. The two publish the same
+  observation and agree to 0.028 degrees Celsius. GHCNh supplies 43,650 hours
+  and IEM a further 151, leaving 23 of 43,824 hours uncovered. Those stay
+  missing rather than being interpolated.
+- **Timestamps are indexed on UTC and reported in both.** That keeps the
+  repeated wall clock hour at the autumn transition distinct, while the local
+  column carries the clock hours the project is scored on.
+- **Screening masks readings, not rows.** One bad variable never discards the
+  rest of an observation. Across the window this masks 11 readings out of
+  7,315,298, and no temperature.
+- **KJNX reports whole degrees Celsius** where every other station reports
+  tenths, so it holds one value for up to 21 consecutive hours. Those runs are
+  quantization rather than a stuck sensor, which is why the flatline threshold
+  is a deliberately loose 24 hours.
+
 ## Modeling approach
 
 To be completed.
