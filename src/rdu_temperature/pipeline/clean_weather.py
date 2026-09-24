@@ -41,6 +41,20 @@ QUALITY_CODE_SUFFIX = "_Quality_Code"
 MAX_ECONET_SCORE = 1
 
 
+def normalize_quality_codes(values: pd.Series) -> pd.Series:
+    """Return quality codes as text, tolerating numerically typed columns.
+
+    A code column whose values are all digits is read as a float, so code 4
+    arrives as "4.0" and never matches the accepted set. Routing integral
+    codes back through an integer makes them comparable with the codes read
+    from mixed columns, where a non-numeric flag keeps the column textual.
+    """
+    text = values.astype("string").str.strip()
+    numeric = pd.to_numeric(text, errors="coerce")
+    integral = numeric.notna() & (numeric % 1 == 0)
+    return text.mask(integral, numeric.astype("Int64").astype("string"))
+
+
 @dataclass(frozen=True)
 class StationRegistry:
     """Canonical station identifiers and the per-source aliases mapping to them.
@@ -146,6 +160,8 @@ class SourceNormalizer(ABC):
     source_name: ClassVar[str]
     station_namespace: ClassVar[str]
     read_options: ClassVar[Mapping[str, Any]] = {}
+    # Values a source writes to mean "not reported", keyed by raw variable.
+    sentinels: ClassVar[Mapping[str, tuple[float, ...]]] = {}
 
     def __init__(self, registry: StationRegistry) -> None:
         self.registry = registry
@@ -185,6 +201,9 @@ class SourceNormalizer(ABC):
             if variable not in frame.columns:
                 continue
             values = pd.to_numeric(frame[variable], errors="coerce")
+            absent = self.sentinels.get(variable)
+            if absent:
+                values = values.mask(values.isin(absent))
             columns[canonical] = convert(values) if convert else values
         return columns
 
@@ -218,6 +237,9 @@ class NoaaGhcnhNormalizer(SourceNormalizer):
 
     source_name = "noaa_ghcnh"
     station_namespace = "ghcnh"
+    # 999 marks an unreported wind direction. It is not a sentinel for the
+    # pressures: 999 hPa occurs there about as often as its neighbours do.
+    sentinels: ClassVar[Mapping[str, tuple[float, ...]]] = {"wind_direction": (999.0,)}
 
     variables: ClassVar[VariableMap] = {
         "temperature": (schema.TEMPERATURE_C, None),
@@ -238,7 +260,7 @@ class NoaaGhcnhNormalizer(SourceNormalizer):
             code_column = f"{variable}{QUALITY_CODE_SUFFIX}"
             if canonical not in columns or code_column not in frame.columns:
                 continue
-            codes = frame[code_column].astype("string").str.strip()
+            codes = normalize_quality_codes(frame[code_column])
             suspect = codes.notna() & ~codes.isin(ACCEPTED_QUALITY_CODES)
             columns[canonical] = columns[canonical].mask(suspect.to_numpy())
         return self._finalize(frame, columns, frame[schema.STATION_ID])

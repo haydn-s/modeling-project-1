@@ -12,6 +12,7 @@ from rdu_temperature.pipeline.clean_weather import (
     OpenMeteoNormalizer,
     StationRegistry,
     TargetSeries,
+    normalize_quality_codes,
 )
 
 CONFIG = {
@@ -324,3 +325,61 @@ def test_target_ignores_other_stations(grid: HourlyGrid) -> None:
 
     assert 99.0 not in target[schema.TEMPERATURE_C].tolist()
     assert target[schema.STATION_ID].unique().tolist() == ["KRDU"]
+
+
+def test_quality_codes_compare_equal_whether_numeric_or_textual() -> None:
+    assert normalize_quality_codes(pd.Series([4.0, 5.0, 9.0])).tolist() == [
+        "4",
+        "5",
+        "9",
+    ]
+    assert normalize_quality_codes(pd.Series(["5", "A", "2"])).tolist() == [
+        "5",
+        "A",
+        "2",
+    ]
+    assert normalize_quality_codes(pd.Series([None])).isna().all()
+
+
+def test_ghcnh_accepts_codes_from_a_numeric_column(
+    registry: StationRegistry,
+) -> None:
+    frame = pd.DataFrame(
+        {
+            "station_id": ["USW00013722"] * 2,
+            "timestamp_utc": pd.to_datetime(
+                ["2026-01-01T00:51Z", "2026-01-01T01:51Z"], utc=True
+            ),
+            # A column of digits alone is read as float, yielding "4.0".
+            "station_level_pressure": [1000.3, 1001.2],
+            "station_level_pressure_Quality_Code": [4.0, 4.0],
+        }
+    )
+
+    result = NoaaGhcnhNormalizer(registry).normalize(frame)
+
+    assert result[schema.PRESSURE_HPA].tolist() == [1000.3, 1001.2]
+
+
+def test_ghcnh_clears_the_wind_direction_sentinel_but_keeps_999_hpa(
+    registry: StationRegistry,
+) -> None:
+    frame = pd.DataFrame(
+        {
+            "station_id": ["USW00013722"] * 2,
+            "timestamp_utc": pd.to_datetime(
+                ["2026-01-01T00:51Z", "2026-01-01T01:51Z"], utc=True
+            ),
+            "wind_direction": [999.0, 180.0],
+            "wind_direction_Quality_Code": [9.0, 9.0],
+            "station_level_pressure": [999.0, 1001.0],
+            "station_level_pressure_Quality_Code": [4.0, 4.0],
+        }
+    )
+
+    result = NoaaGhcnhNormalizer(registry).normalize(frame)
+
+    assert result[schema.WIND_DIRECTION_DEG].isna().tolist() == [True, False]
+    assert result[schema.WIND_DIRECTION_DEG].dropna().tolist() == [180.0]
+    # 999 hPa is an ordinary pressure and must survive.
+    assert result[schema.PRESSURE_HPA].tolist() == [999.0, 1001.0]
