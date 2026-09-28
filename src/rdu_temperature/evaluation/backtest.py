@@ -270,9 +270,10 @@ def main() -> None:
     parser.add_argument("--yearly-order", type=int, default=6)
     parser.add_argument("--daily-order", type=int, default=6)
     parser.add_argument(
-        "--global-daily",
+        "--conditional-daily",
         action="store_true",
-        help="Fit one daily seasonality for the year instead of one per season.",
+        help="Fit one daily seasonality per meteorological season instead of "
+        "one for the whole year.",
     )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -281,7 +282,7 @@ def main() -> None:
         yearly_fourier_order=args.yearly_order,
         daily_fourier_order=args.daily_order,
         changepoint_prior_scale=args.changepoint_prior_scale,
-        conditional_daily=not args.global_daily,
+        conditional_daily=args.conditional_daily,
     )
     BacktestApp(args.target, args.output_dir, config).run(overwrite=args.overwrite)
 

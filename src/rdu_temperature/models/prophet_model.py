@@ -64,6 +64,15 @@ class ProphetConfig:
     The yearly order is below Prophet's default of 10. The annual temperature
     cycle is close to a single sinusoid, and the spare harmonics mostly chase
     individual warm and cold spells that will not recur on the same dates.
+
+    The daily seasonality is one global curve. Splitting it per meteorological
+    season is the more physical model, since the Piedmont's diurnal range is
+    genuinely wider in spring and autumn than under summer humidity, but the
+    backtest does not pay for it: the split moves weighted MAE by 0.017
+    degrees in the wrong direction and loses on three folds of four. The
+    diurnal shape is not where the error lives at this horizon, so the global
+    curve is kept on parsimony. Set ``conditional_daily`` to reproduce the
+    comparison.
     """
 
     yearly_fourier_order: int = 6
@@ -71,11 +80,7 @@ class ProphetConfig:
     changepoint_prior_scale: float = 0.01
     seasonality_prior_scale: float = 10.0
     interval_width: float = 0.8
-    # One daily curve per meteorological season, rather than one curve for the
-    # whole year. Set False for Prophet's single global daily seasonality; the
-    # backtest puts the two within 0.02 degrees of each other, so this is a
-    # documented wash rather than an improvement.
-    conditional_daily: bool = True
+    conditional_daily: bool = False
     seed: int = DEFAULT_SEED
 
     def build(self) -> Prophet:

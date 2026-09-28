@@ -18,13 +18,17 @@ those shapes together. The season flags built here let Prophet fit a separate
 daily curve per season instead.
 
 Measured over the seasonal backtest, that split does not pay for itself: it
-moves mean absolute error by less than 0.02 degrees against a single global
-daily curve, and loses on three folds of four. The diurnal shape is simply not
-where the error lives. A fortnight forecast is dominated by whether the model
-guessed the period's synoptic pattern, which shows up as a bias of two to
-three degrees and swamps any refinement of the daily curve. The flags are kept
-because the comparison is worth stating in the writeup, and because they cost
-nothing once the frame is built.
+moves weighted mean absolute error 0.017 degrees in the wrong direction
+against a single global daily curve, and loses on three folds of four. The
+diurnal shape is simply not where the error lives. A fortnight forecast is
+dominated by whether the model guessed the period's synoptic pattern, which
+shows up as a bias of two to three degrees and swamps any refinement of the
+daily curve.
+
+The model therefore fits one global daily curve by default, and these flags
+go unused unless ``conditional_daily`` is set. They are built regardless: they
+cost nothing once the frame exists, and the comparison is worth being able to
+rerun rather than take on trust.
 
 Hours with no observation stay missing. The pipeline treats the target as a
 measurement rather than an estimate, and Prophet drops null ``y`` rows when it

@@ -88,10 +88,21 @@ def test_seeding_makes_the_sampled_interval_reproducible(
     pd.testing.assert_frame_equal(first, second)
 
 
-def test_conditional_daily_adds_one_seasonality_per_season(
+def test_the_default_fits_one_global_daily_curve(
     fitted: TemperatureProphet,
 ) -> None:
     names = set(fitted.components())
+
+    # The per-season split lost to this on the backtest, so it is opt-in.
+    assert "daily" in names
+    assert not {name for name in names if name.startswith("daily_")}
+
+
+def test_conditional_daily_adds_one_seasonality_per_season() -> None:
+    frame = pf.build(_synthetic_target(hours=24 * 400))
+    model = TemperatureProphet(ProphetConfig(conditional_daily=True)).fit(frame)
+
+    names = set(model.components())
 
     assert {"daily_winter", "daily_spring", "daily_summer", "daily_autumn"} <= names
     # The global daily seasonality is replaced, not supplemented.
