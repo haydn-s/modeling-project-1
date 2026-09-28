@@ -1,0 +1,124 @@
+{
+  "history": {
+    "start_utc": "2021-09-17T04:00:00Z",
+    "end_utc": "2026-09-17T04:00:00Z",
+    "local_timezone": "America/New_York",
+    "possible_extension_years": 10
+  },
+  "airport_stations": [
+    {
+      "name": "Raleigh-Durham International Airport",
+      "icao": "KRDU",
+      "iem_id": "RDU",
+      "ghcnh_id": "USW00013722",
+      "latitude": 35.8922,
+      "longitude": -78.7819
+    },
+    {
+      "name": "Sanford-Lee County Regional Airport",
+      "icao": "KTTA",
+      "iem_id": "TTA",
+      "ghcnh_id": "USW00003723",
+      "latitude": 35.5764,
+      "longitude": -79.1034
+    },
+    {
+      "name": "Johnston County Airport",
+      "icao": "KJNX",
+      "iem_id": "JNX",
+      "ghcnh_id": "USW00003713",
+      "latitude": 35.5409,
+      "longitude": -78.3903
+    },
+    {
+      "name": "Henderson-Oxford Airport",
+      "icao": "KHNZ",
+      "iem_id": "HNZ",
+      "ghcnh_id": "USW00003711",
+      "latitude": 36.36,
+      "longitude": -78.53
+    },
+    {
+      "name": "Burlington-Alamance Regional Airport",
+      "icao": "KBUY",
+      "iem_id": "BUY",
+      "ghcnh_id": "USW00093783",
+      "latitude": 36.0485,
+      "longitude": -79.4749
+    },
+    {
+      "name": "Rocky Mount-Wilson Regional Airport",
+      "icao": "KRWI",
+      "iem_id": "RWI",
+      "ghcnh_id": "USW00093759",
+      "latitude": 35.8562,
+      "longitude": -77.8919
+    }
+  ],
+  "econet_stations": [
+    {
+      "id": "REED",
+      "name": "Reedy Creek Field Laboratory",
+      "latitude": 35.80715,
+      "longitude": -78.74408
+    },
+    {
+      "id": "DURH",
+      "name": "North Durham Water Reclamation Facility",
+      "latitude": 36.02896,
+      "longitude": -78.85851
+    },
+    {
+      "id": "LAKE",
+      "name": "Lake Wheeler Road Field Laboratory",
+      "latitude": 35.72816,
+      "longitude": -78.67981
+    },
+    {
+      "id": "CHAP",
+      "name": "Horace Williams Airport",
+      "latitude": 35.934,
+      "longitude": -79.064
+    }
+  ],
+  "econet": {
+    "variables": [
+      "airtemp2m|C",
+      "dewtemp2m|C",
+      "windspeed10m|ms"
+    ]
+  },
+  "noaa_ghcnh": {
+    "variables": [
+      "temperature",
+      "dew_point_temperature",
+      "relative_humidity",
+      "station_level_pressure",
+      "sea_level_pressure",
+      "altimeter",
+      "wind_direction",
+      "wind_speed",
+      "wind_gust",
+      "precipitation",
+      "visibility",
+      "ceiling_height",
+      "sky_condition"
+    ]
+  },
+  "open_meteo": {
+    "model": "era5_seamless",
+    "request_interval_seconds": 20,
+    "variables": [
+      "temperature_2m",
+      "relative_humidity_2m",
+      "dew_point_2m",
+      "precipitation",
+      "pressure_msl",
+      "cloud_cover",
+      "wind_speed_10m",
+      "wind_direction_10m",
+      "wind_gusts_10m",
+      "shortwave_radiation"
+    ]
+  }
+}
