@@ -73,9 +73,11 @@ def test_rolling_cutoffs_give_far_more_folds_than_seasonal() -> None:
     assert len(rolling_cutoffs(frame)) > 20 * 4
 
 
-def _fold(errors: list[float], *, bounded: bool) -> FoldResult:
-    cutoff = pd.Timestamp("2025-09-17 04:00:00")
-    timestamps = pd.date_range(cutoff, periods=len(errors), freq="h")
+def _fold(
+    errors: list[float], *, bounded: bool, cutoff: str = "2025-09-17 04:00:00"
+) -> FoldResult:
+    start = pd.Timestamp(cutoff)
+    timestamps = pd.date_range(start, periods=len(errors), freq="h")
     truth = [20.0] * len(errors)
     predictions = pd.DataFrame(
         {
@@ -86,7 +88,7 @@ def _fold(errors: list[float], *, bounded: bool) -> FoldResult:
             pf.Y: truth,
         }
     )
-    return FoldResult(cutoff=cutoff, training_hours=8760, predictions=predictions)
+    return FoldResult(cutoff=start, training_hours=8760, predictions=predictions)
 
 
 def test_coverage_is_missing_when_a_model_predicted_no_interval() -> None:
@@ -102,6 +104,49 @@ def test_coverage_is_reported_when_bounds_exist() -> None:
     metrics = _fold([1.0] * 4, bounded=True).metrics()
 
     assert metrics["interval_coverage"] == pytest.approx(1.0)
+
+
+def test_total_rmse_pools_squares_rather_than_averaging_folds() -> None:
+    # Folds chosen so their RMSEs differ sharply: averaging the roots gives
+    # 3.5, pooling the squares gives sqrt((1 + 36) / 2) = 4.301.
+    quiet = _fold([1.0] * 8, bounded=False, cutoff="2024-09-17 04:00:00")
+    loud = _fold([6.0] * 8, bounded=False, cutoff="2025-09-17 04:00:00")
+
+    total = summarize([quiet, loud]).iloc[-1]
+
+    assert total["rmse_c"] == pytest.approx(np.sqrt((1.0 + 36.0) / 2.0))
+    assert total["rmse_c"] != pytest.approx(3.5)
+
+
+def test_total_rmse_matches_a_single_pass_over_every_residual() -> None:
+    folds = [
+        _fold([0.5, 1.5, 2.5, 8.0], bounded=False, cutoff="2023-09-17 04:00:00"),
+        _fold([1.0, 1.0], bounded=False, cutoff="2024-09-17 04:00:00"),
+        _fold([3.0, 4.0, 5.0], bounded=False, cutoff="2025-09-17 04:00:00"),
+    ]
+
+    total = summarize(folds).iloc[-1]
+
+    # Unequal fold lengths as well as unequal errors, so a weighting mistake
+    # shows up as well as the nonlinearity.
+    residuals = np.concatenate(
+        [(f.predictions["yhat"] - f.predictions[pf.Y]).to_numpy() for f in folds]
+    )
+    assert total["rmse_c"] == pytest.approx(np.sqrt((residuals**2).mean()))
+
+
+def test_total_mae_and_bias_still_average_linearly() -> None:
+    folds = [
+        _fold([1.0, 1.0], bounded=False, cutoff="2024-09-17 04:00:00"),
+        _fold([-3.0, -3.0, -3.0, -3.0], bounded=False, cutoff="2025-09-17 04:00:00"),
+    ]
+
+    total = summarize(folds).iloc[-1]
+
+    # These are means of a per-hour quantity, so the weighted mean is exact
+    # and the RMSE fix must not have disturbed them.
+    assert total["mae_c"] == pytest.approx((2 * 1.0 + 4 * 3.0) / 6.0)
+    assert total["bias_c"] == pytest.approx((2 * 1.0 + 4 * -3.0) / 6.0)
 
 
 def test_summary_total_skips_folds_missing_a_metric() -> None:

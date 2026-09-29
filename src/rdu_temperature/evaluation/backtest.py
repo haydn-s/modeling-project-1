@@ -230,6 +230,12 @@ class Backtest:
             yield result
 
 
+# Metrics that are means of a per-hour quantity, so that a weighted mean over
+# folds reproduces a single pass over every scored hour. RMSE is not one of
+# them and is pooled separately.
+LINEAR_METRICS: tuple[str, ...] = ("mae_c", "bias_c", "interval_coverage")
+
+
 def summarize(results: Sequence[FoldResult]) -> pd.DataFrame:
     """Collect every fold's metrics, with a weighted total row appended.
 
@@ -244,8 +250,9 @@ def summarize(results: Sequence[FoldResult]) -> pd.DataFrame:
         "training_years": None,
         "scored_hours": int(weights.sum()),
         "max_abs_error_c": float(per_fold["max_abs_error_c"].max()),
+        "rmse_c": _pooled_rmse(per_fold["rmse_c"], weights),
     }
-    for column in ("mae_c", "rmse_c", "bias_c", "interval_coverage"):
+    for column in LINEAR_METRICS:
         total[column] = _weighted_mean(per_fold[column], weights)
     return pd.concat([per_fold, pd.DataFrame([total])], ignore_index=True)
 
@@ -256,6 +263,22 @@ def _weighted_mean(values: pd.Series, weights: pd.Series) -> float:
     if not present.any():
         return float("nan")
     return float(np.average(values[present], weights=weights[present]))
+
+
+def _pooled_rmse(values: pd.Series, weights: pd.Series) -> float:
+    """Combine per-fold RMSE by pooling squared error, not by averaging it.
+
+    RMSE is the root of a mean, and the root is concave, so the mean of the
+    fold roots sits below the root of the pooled mean: averaging understates
+    the error, and understates it more the further the folds spread apart.
+    Weighting the squares before taking the root reproduces exactly what one
+    pass over every scored residual would give.
+    """
+    present = values.notna()
+    if not present.any():
+        return float("nan")
+    pooled = np.average(values[present] ** 2, weights=weights[present])
+    return float(np.sqrt(pooled))
 
 
 def _write(writer: Callable[[Path], Any], path: Path) -> None:
