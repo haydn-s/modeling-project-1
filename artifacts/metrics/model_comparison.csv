@@ -1,0 +1,5 @@
+folds,metric,challenger,reference,n_folds,mean_difference,ci_low,ci_high,challenger_wins,win_rate,significant
+rolling,mae_c,climatology,prophet,104,-0.05346572076229377,-0.18265974956399023,0.06818105967029035,55,0.5288461538461539,False
+rolling,mae_c,persistence,prophet,104,0.8363384158687638,0.5305920842890887,1.1626090138278782,29,0.27884615384615385,True
+seasonal,mae_c,climatology,prophet,4,-0.19956709808859036,-0.4806658397077781,0.08153164353059739,2,0.5,False
+seasonal,mae_c,persistence,prophet,4,0.7893098453014872,-0.04951176750658548,1.7280763039419604,1,0.25,False
