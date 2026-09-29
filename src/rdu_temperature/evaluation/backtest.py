@@ -1,47 +1,87 @@
-"""Score the Prophet model on past Septembers without touching the forecast.
+"""Score every model on past hours without touching the forecast period.
 
 Run from the repository root with:
 
     python -m rdu_temperature.evaluation.backtest
 
-A generic rolling-origin split would report how the model does on an average
-fortnight. That is not the task. The project forecasts 336 hours beginning on
-September 17, so every fold here reproduces exactly that: a cutoff on the same
-date in an earlier year, the same horizon, and training restricted to the hours
-before it. What comes out is the model's record on four reruns of the problem
-it will actually be asked to solve, rather than on a fortnight in March.
+Two fold sets, because they answer different questions and neither answers
+both.
 
-Folds are held strictly before the real cutoff, so no fold can see an hour from
-the forecast period. The earliest fold trains on a single annual cycle and the
-latest on four, which is close to the five the final fit will have; reading the
-folds in order shows what the extra years are worth.
+The **seasonal** folds reproduce the task. Each takes a cutoff on September 17
+of an earlier year, forecasts the same 336 hours, and trains only on the hours
+before it. These are the headline numbers: the model's record on reruns of the
+problem it will actually be asked to solve, rather than on a fortnight in
+March. There are only four of them, which is the catch.
+
+The **rolling** folds exist to make small differences measurable. Four folds
+cannot resolve anything: the spread between them is larger than most effects
+worth testing, so a change of a tenth of a degree is indistinguishable from
+which Septembers happened to land in the sample. Stepping a cutoff through the
+whole history gives a hundred or so folds and the power to tell a real
+improvement from noise. They are not the task — they average over seasons the
+project will never forecast — so they inform decisions rather than report
+results.
+
+Folds in both sets are held strictly before the real cutoff, so none can see an
+hour from the forecast period.
 """
 
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import pandas as pd
 
 from rdu_temperature.features import prophet_frame
-from rdu_temperature.models.prophet_model import (
-    ProphetConfig,
-    TemperatureProphet,
-    split,
-)
+from rdu_temperature.models.baselines import Climatology, SeasonalPersistence
+from rdu_temperature.models.prophet_model import ProphetConfig, TemperatureProphet
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "artifacts" / "metrics"
 
-# One full annual cycle before Prophet has any yearly seasonality to estimate.
+# One full annual cycle before a model has any yearly seasonality to estimate.
 MINIMUM_TRAINING_DAYS = 365
 
+# How far the rolling cutoff advances between folds. Fourteen days keeps
+# consecutive horizons from overlapping, so no observed hour is scored twice
+# within a fold set and the folds stay close to independent.
+ROLLING_STEP_DAYS = 14
+
 HOURS_PER_DAY = 24
+
+
+class ForecastModel(Protocol):
+    """What the backtest needs of a model: fit on history, predict a horizon."""
+
+    def fit(self, history: pd.DataFrame) -> Any: ...
+
+    def forecast(self, cutoff: pd.Timestamp, hours: int) -> pd.DataFrame: ...
+
+
+ModelFactory = Callable[[], ForecastModel]
+
+MODELS: Mapping[str, ModelFactory] = {
+    "prophet": lambda: TemperatureProphet(ProphetConfig()),
+    "climatology": Climatology,
+    "persistence": SeasonalPersistence,
+}
+
+
+def split(
+    frame: pd.DataFrame, cutoff: pd.Timestamp
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Divide the frame at a cutoff into history and held-out truth.
+
+    The split is strictly before and on-or-after the cutoff, matching the
+    half-open ingestion window, so no hour can land in both halves.
+    """
+    before = frame[prophet_frame.DS] < cutoff
+    return frame.loc[before].copy(), frame.loc[~before].copy()
 
 
 def seasonal_cutoffs(
@@ -71,6 +111,31 @@ def seasonal_cutoffs(
     return sorted(folds)
 
 
+def rolling_cutoffs(
+    frame: pd.DataFrame,
+    horizon_hours: int = prophet_frame.FORECAST_HOURS,
+    step_days: int = ROLLING_STEP_DAYS,
+    minimum_training_days: int = MINIMUM_TRAINING_DAYS,
+) -> list[pd.Timestamp]:
+    """Step a cutoff through the whole history, oldest first.
+
+    The first cutoff sits one annual cycle after the data begins and the last
+    one full horizon before it ends, so every fold trains on a complete year
+    and scores a complete horizon.
+    """
+    first = frame[prophet_frame.DS].min()
+    frame_end = frame[prophet_frame.DS].max() + pd.Timedelta(hours=1)
+    horizon = pd.Timedelta(hours=horizon_hours)
+    step = pd.Timedelta(days=step_days)
+
+    folds: list[pd.Timestamp] = []
+    candidate = first + pd.Timedelta(days=minimum_training_days)
+    while candidate + horizon <= frame_end:
+        folds.append(pd.Timestamp(candidate))
+        candidate += step
+    return folds
+
+
 @dataclass(frozen=True)
 class FoldResult:
     """One fold's predictions joined to the truth it was scored against."""
@@ -91,9 +156,6 @@ class FoldResult:
     def metrics(self) -> dict[str, Any]:
         scored = self.scored
         error = scored["yhat"] - scored[prophet_frame.Y]
-        inside = scored[prophet_frame.Y].between(
-            scored["yhat_lower"], scored["yhat_upper"]
-        )
         return {
             "cutoff": self.cutoff,
             "training_hours": self.training_hours,
@@ -103,7 +165,7 @@ class FoldResult:
             "rmse_c": float(np.sqrt((error**2).mean())),
             "bias_c": float(error.mean()),
             "max_abs_error_c": float(error.abs().max()),
-            "interval_coverage": float(inside.mean()),
+            "interval_coverage": _coverage(scored),
         }
 
     def by_lead_day(self) -> pd.DataFrame:
@@ -122,16 +184,31 @@ class FoldResult:
         )
 
 
+def _coverage(scored: pd.DataFrame) -> float:
+    """Share of observations inside the interval, or missing if there is none.
+
+    A baseline that estimated no spread reports no coverage. Treating its
+    absent bounds as a failed interval would score it as nought per cent and
+    read as though it had predicted badly rather than not at all.
+    """
+    bounds = scored.loc[:, ["yhat_lower", "yhat_upper"]]
+    if bounds.isna().all(axis=None):
+        return float("nan")
+    inside = scored[prophet_frame.Y].between(scored["yhat_lower"], scored["yhat_upper"])
+    return float(inside.mean())
+
+
 @dataclass(frozen=True)
 class Backtest:
-    """Refit the model at each cutoff and score the horizon that follows."""
+    """Refit a model at each cutoff and score the horizon that follows."""
 
-    config: ProphetConfig = field(default_factory=ProphetConfig)
+    model_factory: ModelFactory
     horizon_hours: int = prophet_frame.FORECAST_HOURS
 
     def run_fold(self, frame: pd.DataFrame, cutoff: pd.Timestamp) -> FoldResult:
         history, held_out = split(frame, cutoff)
-        model = TemperatureProphet(self.config).fit(history)
+        model = self.model_factory()
+        model.fit(history)
         predictions = model.forecast(cutoff, self.horizon_hours)
         truth = held_out.loc[:, [prophet_frame.DS, prophet_frame.Y]]
         return FoldResult(
@@ -169,8 +246,16 @@ def summarize(results: Sequence[FoldResult]) -> pd.DataFrame:
         "max_abs_error_c": float(per_fold["max_abs_error_c"].max()),
     }
     for column in ("mae_c", "rmse_c", "bias_c", "interval_coverage"):
-        total[column] = float(np.average(per_fold[column], weights=weights))
+        total[column] = _weighted_mean(per_fold[column], weights)
     return pd.concat([per_fold, pd.DataFrame([total])], ignore_index=True)
+
+
+def _weighted_mean(values: pd.Series, weights: pd.Series) -> float:
+    """Weighted mean over the folds that reported the metric at all."""
+    present = values.notna()
+    if not present.any():
+        return float("nan")
+    return float(np.average(values[present], weights=weights[present]))
 
 
 def _write(writer: Callable[[Path], Any], path: Path) -> None:
@@ -180,24 +265,44 @@ def _write(writer: Callable[[Path], Any], path: Path) -> None:
     temporary_path.replace(path)
 
 
-class BacktestApp:
-    """Load the frame, run every seasonal fold, and write the metrics."""
+@dataclass(frozen=True)
+class FoldSet:
+    """A named set of cutoffs and what it is for."""
 
-    summary_filename = "prophet_backtest_summary.csv"
-    lead_filename = "prophet_backtest_by_lead_day.csv"
-    predictions_filename = "prophet_backtest_predictions.parquet"
+    name: str
+    cutoffs: list[pd.Timestamp]
+
+
+class BacktestApp:
+    """Run every model over every fold set and write one set of metrics."""
+
+    summary_filename = "backtest_summary.csv"
+    lead_filename = "backtest_by_lead_day.csv"
+    predictions_filename = "backtest_predictions.parquet"
 
     def __init__(
         self,
         target_path: Path,
         output_dir: Path,
-        config: ProphetConfig,
+        models: Mapping[str, ModelFactory],
         horizon_hours: int = prophet_frame.FORECAST_HOURS,
+        step_days: int = ROLLING_STEP_DAYS,
     ) -> None:
         self.target_path = target_path
         self.output_dir = output_dir
-        self.config = config
+        self.models = models
         self.horizon_hours = horizon_hours
+        self.step_days = step_days
+
+    def fold_sets(self, frame: pd.DataFrame) -> list[FoldSet]:
+        cutoff = prophet_frame.forecast_cutoff()
+        return [
+            FoldSet("seasonal", seasonal_cutoffs(frame, cutoff, self.horizon_hours)),
+            FoldSet(
+                "rolling",
+                rolling_cutoffs(frame, self.horizon_hours, self.step_days),
+            ),
+        ]
 
     def run(self, *, overwrite: bool = False) -> dict[str, Path]:
         outputs = {
@@ -212,50 +317,72 @@ class BacktestApp:
             )
 
         frame = prophet_frame.load(self.target_path)
-        cutoff = prophet_frame.forecast_cutoff()
-        cutoffs = seasonal_cutoffs(frame, cutoff, self.horizon_hours)
-        if not cutoffs:
+        fold_sets = self.fold_sets(frame)
+        if not any(folds.cutoffs for folds in fold_sets):
             raise ValueError(
                 "No backtest fold fits inside the history; check the target grid."
             )
-        print(
-            f"Forecast cutoff {cutoff}; {len(cutoffs)} seasonal fold(s) "
-            f"over a {self.horizon_hours}-hour horizon.",
-            flush=True,
-        )
 
-        backtest = Backtest(self.config, self.horizon_hours)
-        results = list(backtest.run(frame, cutoffs, on_fold=_report))
+        summaries: list[pd.DataFrame] = []
+        leads: list[pd.DataFrame] = []
+        predictions: list[pd.DataFrame] = []
 
-        summary = summarize(results)
-        by_lead_day = pd.concat(
-            [result.by_lead_day() for result in results], ignore_index=True
-        )
-        predictions = pd.concat(
-            [result.predictions.assign(cutoff=result.cutoff) for result in results],
-            ignore_index=True,
-        )
+        for folds in fold_sets:
+            print(
+                f"\n{folds.name}: {len(folds.cutoffs)} fold(s) over a "
+                f"{self.horizon_hours}-hour horizon.",
+                flush=True,
+            )
+            for name, factory in self.models.items():
+                results = list(
+                    Backtest(factory, self.horizon_hours).run(frame, folds.cutoffs)
+                )
+                summary = summarize(results).assign(model=name, folds=folds.name)
+                summaries.append(summary)
+                leads.append(
+                    pd.concat(
+                        [result.by_lead_day() for result in results], ignore_index=True
+                    ).assign(model=name, folds=folds.name)
+                )
+                predictions.append(
+                    pd.concat(
+                        [
+                            result.predictions.assign(cutoff=result.cutoff)
+                            for result in results
+                        ],
+                        ignore_index=True,
+                    ).assign(model=name, folds=folds.name)
+                )
+                _report(name, summary.iloc[-1])
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        _write(lambda path: summary.to_csv(path, index=False), outputs["summary"])
         _write(
-            lambda path: by_lead_day.to_csv(path, index=False), outputs["by_lead_day"]
+            lambda path: pd.concat(summaries, ignore_index=True).to_csv(
+                path, index=False
+            ),
+            outputs["summary"],
         )
-        _write(predictions.to_parquet, outputs["predictions"])
+        _write(
+            lambda path: pd.concat(leads, ignore_index=True).to_csv(path, index=False),
+            outputs["by_lead_day"],
+        )
+        _write(
+            pd.concat(predictions, ignore_index=True).to_parquet, outputs["predictions"]
+        )
         for name, path in outputs.items():
             print(f"Wrote {name}: {path}", flush=True)
         return outputs
 
 
-def _report(result: FoldResult) -> None:
-    metrics = result.metrics()
+def _report(model: str, total: pd.Series) -> None:
+    coverage = total["interval_coverage"]
+    coverage_text = "     —" if pd.isna(coverage) else f"{coverage:6.0%}"
     print(
-        f"  {metrics['cutoff']:%Y-%m-%d}  "
-        f"train {metrics['training_years']:>4} yr  "
-        f"MAE {metrics['mae_c']:5.2f} C  "
-        f"RMSE {metrics['rmse_c']:5.2f} C  "
-        f"bias {metrics['bias_c']:+5.2f} C  "
-        f"coverage {metrics['interval_coverage']:.0%}",
+        f"  {model:<12s} MAE {total['mae_c']:5.2f} C  "
+        f"RMSE {total['rmse_c']:5.2f} C  "
+        f"bias {total['bias_c']:+5.2f} C  "
+        f"coverage {coverage_text}  "
+        f"({int(total['scored_hours']):,} hours)",
         flush=True,
     )
 
@@ -266,25 +393,21 @@ def main() -> None:
         "--target", type=Path, default=prophet_frame.DEFAULT_TARGET_PATH
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--changepoint-prior-scale", type=float, default=0.01)
-    parser.add_argument("--yearly-order", type=int, default=6)
-    parser.add_argument("--daily-order", type=int, default=6)
     parser.add_argument(
-        "--conditional-daily",
-        action="store_true",
-        help="Fit one daily seasonality per meteorological season instead of "
-        "one for the whole year.",
+        "--model",
+        action="append",
+        choices=sorted(MODELS),
+        help="Restrict the run to one model; repeat for several.",
     )
+    parser.add_argument("--step-days", type=int, default=ROLLING_STEP_DAYS)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
-    config = ProphetConfig(
-        yearly_fourier_order=args.yearly_order,
-        daily_fourier_order=args.daily_order,
-        changepoint_prior_scale=args.changepoint_prior_scale,
-        conditional_daily=args.conditional_daily,
+    chosen = args.model or list(MODELS)
+    models = {name: MODELS[name] for name in chosen}
+    BacktestApp(args.target, args.output_dir, models, step_days=args.step_days).run(
+        overwrite=args.overwrite
     )
-    BacktestApp(args.target, args.output_dir, config).run(overwrite=args.overwrite)
 
 
 if __name__ == "__main__":

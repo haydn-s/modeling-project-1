@@ -3,9 +3,13 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from rdu_temperature.evaluation.backtest import FoldResult, seasonal_cutoffs, summarize
+from rdu_temperature.evaluation.backtest import (
+    FoldResult,
+    seasonal_cutoffs,
+    split,
+    summarize,
+)
 from rdu_temperature.features import prophet_frame as pf
-from rdu_temperature.models.prophet_model import split
 from rdu_temperature.pipeline import schema
 
 

@@ -163,15 +163,3 @@ class TemperatureProphet:
             }
             for name, term in self.model.seasonalities.items()
         }
-
-
-def split(
-    frame: pd.DataFrame, cutoff: pd.Timestamp
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Divide the Prophet frame at a cutoff into history and held-out truth.
-
-    The split is strictly before and on-or-after the cutoff, matching the
-    half-open ingestion window, so no hour can land in both halves.
-    """
-    before = frame[prophet_frame.DS] < cutoff
-    return frame.loc[before].copy(), frame.loc[~before].copy()
