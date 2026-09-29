@@ -1,5 +1,7 @@
 # RDU Hourly Temperature Forecasting
 
+[![CI](https://github.com/haydn-s/modeling-project-1/actions/workflows/ci.yml/badge.svg)](https://github.com/haydn-s/modeling-project-1/actions/workflows/ci.yml)
+
 This project predicts the hourly temperature measured at Raleigh-Durham International Airport (RDU) from September 17, 2026 at 12:00 a.m. through September 30, 2026 at 11:00 p.m.
 
 Only information available before September 17, 2026 at 12:00 a.m. may be used to build the forecasts.
@@ -35,6 +37,7 @@ Only information available before September 17, 2026 at 12:00 a.m. may be used t
 - `reports/figures/`: Figures for the presentation and writeup
 - `reports/tables/`: Tables for the presentation and writeup
 - `docs/`: Project documentation and requirements
+- `.github/workflows/`: Continuous integration
 - `.env.example`: Template for local environment variables
 - `requirements.txt`: Python dependencies
 
@@ -98,6 +101,34 @@ docs(readme): document the evaluation approach
 ```
 
 Use `!` before the colon for a breaking change, or add a `BREAKING CHANGE:` footer to the commit body.
+
+## Continuous integration
+
+Every pull request, and every push to `main`, runs three jobs:
+
+- **Lint**: `ruff format --check` and `ruff check` over `src` and `tests`
+- **Tests**: the full `pytest` suite, then `--help` on each command-line entry
+  point
+- **Commit messages**: the repository's own commitlint hook, over every commit
+  in the pull request
+
+The jobs reproduce locally with no extra tooling:
+
+```bash
+ruff format --check src tests && ruff check src tests && pytest -q
+```
+
+Two things worth knowing about what CI can and cannot check here.
+
+The generated datasets are not in the repository, so no job runs the pipeline,
+the backtest, or the figures. The test suite builds every fixture it needs,
+which is what makes it meaningful without the data; the entry-point check
+covers argument parsing only. Anything that depends on real observations has to
+be run and reviewed by hand.
+
+The lint and commit-message jobs install a single pinned tool read straight out
+of `requirements.txt`, rather than repeating a version in the workflow. CI
+cannot drift from what runs locally without the pin changing first.
 
 ## Data sources
 
