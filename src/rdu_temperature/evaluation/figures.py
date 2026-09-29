@@ -27,7 +27,7 @@ slides are both light, so no dark variant is generated.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,11 +44,18 @@ from rdu_temperature.features import prophet_frame
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_PREDICTIONS_PATH = (
-    PROJECT_ROOT / "artifacts" / "metrics" / "prophet_backtest_predictions.parquet"
+    PROJECT_ROOT / "artifacts" / "metrics" / "backtest_predictions.parquet"
 )
+DEFAULT_LEAD_PATH = PROJECT_ROOT / "artifacts" / "metrics" / "backtest_by_lead_day.csv"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "reports" / "figures"
 
 HOURS_PER_DAY = 24
+
+# The error figure reports the task, so it reads the seasonal folds. The
+# rolling folds average over seasons the project never forecasts; they are for
+# deciding between models, not for describing this one.
+FIGURE_MODEL = "prophet"
+FIGURE_FOLDS = "seasonal"
 
 # Chart chrome. Marks carry identity; every piece of text stays in ink.
 SURFACE = "#fcfcfb"
@@ -71,15 +78,33 @@ SERIES_OBSERVED = INK_PRIMARY
 BIAS_WARM = "#e34948"
 BIAS_COOL = "#2a78d6"
 
+# Categorical slots one to three, in their fixed order. Three is the cap that
+# validates across every pairing rather than only adjacent ones, and three is
+# all this comparison needs.
+MODEL_COLOURS: Mapping[str, str] = {
+    "prophet": "#2a78d6",
+    "climatology": "#eb6834",
+    "persistence": "#1baf7a",
+}
 
-def load(path: Path = DEFAULT_PREDICTIONS_PATH) -> pd.DataFrame:
-    """Read the backtest predictions and attach lead time in days."""
+
+def load(
+    path: Path = DEFAULT_PREDICTIONS_PATH,
+    model: str = FIGURE_MODEL,
+    folds: str = FIGURE_FOLDS,
+) -> pd.DataFrame:
+    """Read one model's predictions on one fold set, with lead time attached."""
     if not path.exists():
         raise FileNotFoundError(
             f"No backtest predictions at {path}; run "
             "rdu_temperature.evaluation.backtest."
         )
-    frame = pd.read_parquet(path)
+    stored = pd.read_parquet(path)
+    frame = stored.loc[
+        (stored["model"] == model) & (stored["folds"] == folds)
+    ].reset_index(drop=True)
+    if frame.empty:
+        raise ValueError(f"No {model!r} predictions on the {folds!r} folds in {path}.")
     elapsed = frame[prophet_frame.DS] - frame["cutoff"]
     frame["lead_day"] = (elapsed.dt.total_seconds() // (HOURS_PER_DAY * 3600)).astype(
         int
@@ -310,6 +335,111 @@ class ErrorFigure:
         return figure
 
 
+def load_lead_days(path: Path = DEFAULT_LEAD_PATH) -> pd.DataFrame:
+    """Read every model's error by lead day, across both fold sets."""
+    if not path.exists():
+        raise FileNotFoundError(
+            f"No lead-day metrics at {path}; run rdu_temperature.evaluation.backtest."
+        )
+    return pd.read_csv(path)
+
+
+@dataclass(frozen=True)
+class ComparisonFigure:
+    """Prophet against its baselines, on both fold sets.
+
+    The two panels are not interchangeable. The seasonal folds report the task
+    and the rolling folds decide the question, because four folds cannot
+    separate two models and a hundred can. Showing them together is what makes
+    the difference in fold count legible rather than a methodological footnote.
+    """
+
+    width: float = 11.0
+    height: float = 4.4
+    dpi: int = 200
+
+    def draw(self, lead_days: pd.DataFrame) -> plt.Figure:
+        figure, axes_pair = plt.subplots(
+            1, 2, figsize=(self.width, self.height), facecolor=SURFACE, sharey=True
+        )
+        panels = (
+            ("seasonal", "Seasonal folds — the task"),
+            ("rolling", "Rolling folds — the evidence"),
+        )
+        # The panels share a y axis, so the limit has to come from both of
+        # them. Letting either autoscale alone clips the other's worst model.
+        ceiling = (
+            lead_days.groupby(["folds", "model", "lead_day"])["mae_c"].mean().max()
+        )
+        for axes, (folds, title) in zip(axes_pair, panels):
+            scoped = lead_days.loc[lead_days["folds"] == folds]
+            n_folds = scoped.groupby("model")["cutoff"].nunique().max()
+            for model, colour in MODEL_COLOURS.items():
+                series = scoped.loc[scoped["model"] == model]
+                if series.empty:
+                    continue
+                mean = series.groupby("lead_day", as_index=False)["mae_c"].mean()
+                axes.plot(
+                    mean["lead_day"],
+                    mean["mae_c"],
+                    color=colour,
+                    linewidth=2.0,
+                    marker="o",
+                    markersize=3.5,
+                    zorder=3,
+                )
+            axes.set_title(
+                f"{title}  ({n_folds} folds)",
+                fontsize=9.5,
+                color=INK_PRIMARY,
+                pad=6,
+            )
+            axes.set_xlabel("Lead time (days)", fontsize=8.5, color=INK_SECONDARY)
+            axes.set_xlim(0.5, 14.5)
+            axes.set_xticks([1, 4, 7, 10, 14])
+            axes.set_ylim(0, ceiling * 1.12)
+            _style_axes(axes)
+        axes_pair[0].set_ylabel(
+            "Mean absolute error (°C)", fontsize=8.5, color=INK_SECONDARY
+        )
+
+        figure.legend(
+            handles=[
+                Line2D([], [], color=colour, linewidth=2.0, marker="o", markersize=3.5)
+                for colour in MODEL_COLOURS.values()
+            ],
+            labels=[name.capitalize() for name in MODEL_COLOURS],
+            frameon=False,
+            fontsize=8.5,
+            labelcolor=INK_SECONDARY,
+            ncols=3,
+            loc="upper right",
+            bbox_to_anchor=(0.995, 0.995),
+        )
+        figure.suptitle(
+            "Prophet does not measurably beat a lookup table",
+            fontsize=12,
+            color=INK_PRIMARY,
+            x=0.008,
+            y=0.972,
+            ha="left",
+        )
+        figure.text(
+            0.008,
+            0.900,
+            "Paired over 104 rolling folds, Prophet and climatology differ by "
+            "0.05 °C with a confidence interval spanning zero. Both clear "
+            "persistence, which is a real difference.",
+            fontsize=9,
+            color=INK_SECONDARY,
+            ha="left",
+        )
+        figure.subplots_adjust(
+            top=0.74, bottom=0.14, left=0.07, right=0.98, wspace=0.08
+        )
+        return figure
+
+
 def _write(writer: Callable[[Path], None], path: Path) -> None:
     """Write through a temporary file so a failure cannot truncate the output."""
     temporary_path = path.with_suffix(path.suffix + ".tmp")
@@ -317,32 +447,48 @@ def _write(writer: Callable[[Path], None], path: Path) -> None:
     temporary_path.replace(path)
 
 
+def _save(figure: plt.Figure, path: Path, dpi: int) -> None:
+    # The temporary path ends in .tmp, so the format cannot be inferred from
+    # the suffix the way savefig normally does it.
+    _write(
+        lambda temporary: figure.savefig(
+            temporary, format="png", dpi=dpi, facecolor=SURFACE
+        ),
+        path,
+    )
+    plt.close(figure)
+    print(f"Wrote figure: {path}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--predictions", type=Path, default=DEFAULT_PREDICTIONS_PATH)
+    parser.add_argument("--lead-days", type=Path, default=DEFAULT_LEAD_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
-    output_path = args.output_dir / "prophet_backtest_error.png"
-    if output_path.exists() and not args.overwrite:
+    outputs = {
+        "error": args.output_dir / "prophet_backtest_error.png",
+        "comparison": args.output_dir / "model_comparison.png",
+    }
+    existing = [path for path in outputs.values() if path.exists()]
+    if existing and not args.overwrite:
         raise FileExistsError(
-            f"{output_path} already exists; pass --overwrite to replace it."
+            f"{existing[0]} already exists; pass --overwrite to replace it."
         )
 
-    specification = ErrorFigure()
-    figure = specification.draw(load(args.predictions))
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    # The temporary path ends in .tmp, so the format cannot be inferred from
-    # the suffix the way savefig normally does it.
-    _write(
-        lambda path: figure.savefig(
-            path, format="png", dpi=specification.dpi, facecolor=SURFACE
-        ),
-        output_path,
+
+    error = ErrorFigure()
+    _save(error.draw(load(args.predictions)), outputs["error"], error.dpi)
+
+    comparison = ComparisonFigure()
+    _save(
+        comparison.draw(load_lead_days(args.lead_days)),
+        outputs["comparison"],
+        comparison.dpi,
     )
-    plt.close(figure)
-    print(f"Wrote figure: {output_path}", flush=True)
 
 
 if __name__ == "__main__":
