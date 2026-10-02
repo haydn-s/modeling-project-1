@@ -176,6 +176,32 @@ def test_attaching_refuses_a_regressor_with_gaps() -> None:
         fc.attach_to_prophet_frame(frame, covariates)
 
 
+def test_covered_cutoffs_keep_only_fully_covered_folds() -> None:
+    covered = pd.Timestamp("2025-09-17 04:00:00")
+    panel = _panel("2025-09-16 12:00", "2025-09-17 04:00", 24)
+    uncovered = pd.Timestamp("2024-09-17 04:00:00")
+
+    kept = fc.covered_cutoffs(panel, [uncovered, covered], hours=24)
+
+    # A model cannot score a fold it has no forecast for, and a paired
+    # comparison needs every model on the same folds.
+    assert kept == [covered]
+
+
+def test_covered_cutoffs_reject_a_partial_horizon() -> None:
+    cutoff = pd.Timestamp("2025-09-17 04:00:00")
+    # Twelve hours of covariate against a twenty-four hour horizon.
+    panel = _panel("2025-09-16 12:00", "2025-09-17 04:00", 12)
+
+    assert fc.covered_cutoffs(panel, [cutoff], hours=24) == []
+
+
+def test_covered_cutoffs_are_empty_without_a_panel() -> None:
+    empty = _panel("2026-09-16 12:00", "2026-09-17 04:00", 0)
+
+    assert fc.covered_cutoffs(empty, [CUTOFF], hours=24) == []
+
+
 def test_load_panel_reports_a_missing_panel(tmp_path) -> None:
     with pytest.raises(FileNotFoundError, match="clean_gfs"):
         fc.load_panel(tmp_path / "absent.parquet")

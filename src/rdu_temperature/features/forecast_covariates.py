@@ -32,6 +32,7 @@ two thirds of a fourteen-day horizon is filled between published leads.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -154,6 +155,60 @@ def forecast_error(pairs: pd.DataFrame) -> pd.Series:
     warm in both places.
     """
     return pairs[f"{PREFIX}{schema.TEMPERATURE_C}"] - pairs[OBSERVED_TEMPERATURE_C]
+
+
+def regressor_columns(frame: pd.DataFrame) -> list[str]:
+    """The covariate columns on a joined frame, in their fixed order."""
+    return [column for column in frame.columns if column.startswith(PREFIX)]
+
+
+def covered_cutoffs(
+    panel: pd.DataFrame,
+    cutoffs: Sequence[pd.Timestamp],
+    hours: int = prophet_frame.FORECAST_HOURS,
+) -> list[pd.Timestamp]:
+    """The cutoffs whose whole horizon a legitimate run covers.
+
+    A covariate model cannot score a fold it has no forecast for, and a paired
+    comparison needs every model on the same folds. Filtering the fold set to
+    the covered ones keeps the pairing exact, which matters more than scoring
+    the univariate models on folds their rivals cannot reach: an average taken
+    over a different set of fortnights is not comparable.
+    """
+    covered: list[pd.Timestamp] = []
+    for cutoff in cutoffs:
+        try:
+            window = forecast_covariates(panel, cutoff, hours)
+        except ValueError:
+            continue
+        if len(window) == hours and not window.isna().any(axis=None):
+            covered.append(cutoff)
+    return covered
+
+
+def attach_available(
+    frame: pd.DataFrame, panel: pd.DataFrame, cutoff: pd.Timestamp
+) -> pd.DataFrame:
+    """Join whatever covariates the panel holds, leaving the rest missing.
+
+    The counterpart to :func:`attach_to_prophet_frame`, for training rather
+    than forecasting. A fetch covers a handful of fortnights out of five
+    years, so most of the history has no covariate and never will; a model
+    that wants one selects the rows that have it. Demanding full coverage
+    here would mean refusing to train at all.
+
+    Only runs initialised before the cutoff are joined, so the covariate on a
+    training row is one that would have existed at the time.
+    """
+    legitimate = panel.loc[panel[schema.INIT_TIME_UTC] < cutoff]
+    freshest = (
+        _prefixed(legitimate)
+        .sort_values([schema.VALID_TIME_UTC, schema.INIT_TIME_UTC])
+        .groupby(schema.VALID_TIME_UTC, as_index=False)
+        .last()
+        .rename(columns={schema.VALID_TIME_UTC: prophet_frame.DS})
+    )
+    return frame.merge(freshest, on=prophet_frame.DS, how="left")
 
 
 def attach_to_prophet_frame(
