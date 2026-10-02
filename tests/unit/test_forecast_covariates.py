@@ -35,10 +35,16 @@ def _panel(init: str, first_valid: str, hours: int, offset: float = 0.0):
 
 
 def _target(first: str, hours: int, value: float = 18.0) -> pd.DataFrame:
+    """The target as the cleaning pipeline writes it: aware, on UTC.
+
+    This fixture was naive until real data proved otherwise, and the join
+    silently passed because both sides happened to agree. It is aware here so
+    that the test exercises the conversion the real parquet requires.
+    """
     return pd.DataFrame(
         {
             schema.TIMESTAMP_UTC: pd.date_range(
-                pd.Timestamp(first), periods=hours, freq="h"
+                pd.Timestamp(first), periods=hours, freq="h", tz="UTC"
             ),
             schema.TEMPERATURE_C: [value] * hours,
         }

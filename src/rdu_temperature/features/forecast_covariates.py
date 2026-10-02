@@ -129,7 +129,7 @@ def training_pairs(
         )
         .assign(
             **{
-                schema.VALID_TIME_UTC: lambda frame: pd.to_datetime(
+                schema.VALID_TIME_UTC: lambda frame: _naive_utc(
                     frame[schema.VALID_TIME_UTC]
                 )
             }
@@ -155,6 +155,18 @@ def forecast_error(pairs: pd.DataFrame) -> pd.Series:
     warm in both places.
     """
     return pairs[f"{PREFIX}{schema.TEMPERATURE_C}"] - pairs[OBSERVED_TEMPERATURE_C]
+
+
+def _naive_utc(values: pd.Series) -> pd.Series:
+    """Return timestamps as naive UTC, whatever they arrive as.
+
+    The cleaned target is stored timezone-aware on UTC, while ``ds`` and the
+    forecast panel carry UTC wall time with the offset stripped, because
+    Prophet rejects an aware timestamp. Joining the two directly raises, so
+    the observation side is converted here rather than at each call.
+    """
+    timestamps = pd.to_datetime(values, utc=True)
+    return timestamps.dt.tz_localize(None)
 
 
 def regressor_columns(frame: pd.DataFrame) -> list[str]:
