@@ -275,32 +275,79 @@ class GfsIngestion:
     def fetch_run(self, run: GfsRun) -> pd.DataFrame:
         rows: list[dict[str, Any]] = []
         for lead in run.leads:
-            values = self.fetch_lead(run, lead)
-            rows.append(
-                {
-                    schema.SOURCE: self.source_name,
-                    schema.STATION_ID: self.station_id,
-                    schema.INIT_TIME_UTC: run.init_time,
-                    schema.VALID_TIME_UTC: run.init_time + pd.Timedelta(hours=lead),
-                    schema.LEAD_HOURS: lead,
-                    **values,
-                }
-            )
+            rows.append(self.fetch_row(run, lead))
         return pd.DataFrame(rows)
+
+    def fetch_row(self, run: GfsRun, lead: int) -> dict[str, Any]:
+        """Fetch one lead and attach the two timestamps that prevent leakage."""
+        values = self.fetch_lead(run, lead)
+        return {
+            schema.SOURCE: self.source_name,
+            schema.STATION_ID: self.station_id,
+            schema.INIT_TIME_UTC: run.init_time,
+            schema.VALID_TIME_UTC: run.init_time + pd.Timedelta(hours=lead),
+            schema.LEAD_HOURS: lead,
+            **values,
+        }
 
     def run_path(self, run: GfsRun) -> Path:
         return self.output_dir / f"gfs_{run.slug}.csv"
 
+    def checkpoint_path(self, run: GfsRun) -> Path:
+        """Path holding completed leads until the run is fully downloaded."""
+        return self.output_dir / f"gfs_{run.slug}.partial.csv"
+
+    @staticmethod
+    def _write_csv_atomic(frame: pd.DataFrame, path: Path) -> None:
+        temporary_path = path.with_suffix(f"{path.suffix}.tmp")
+        frame.to_csv(temporary_path, index=False, date_format="%Y-%m-%dT%H:%M:%SZ")
+        temporary_path.replace(path)
+
     def ingest_run(self, run: GfsRun, *, overwrite: bool = False) -> Path:
-        """Fetch one run, skipping it when its file is already on disk."""
+        """Fetch one run, resuming after the last successfully saved lead.
+
+        NOAA serves one index plus one byte-range request per field for every
+        lead. A fourteen-day run therefore makes more than a thousand HTTP
+        requests. Saving only after the final request meant one late timeout
+        discarded the entire run. The partial CSV is updated atomically after
+        each lead so a retry loses at most the request currently in flight.
+        """
         path = self.run_path(run)
         if path.exists() and not overwrite:
             return path
-        frame = self.fetch_run(run)
+
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        temporary_path = path.with_suffix(".csv.tmp")
-        frame.to_csv(temporary_path, index=False, date_format="%Y-%m-%dT%H:%M:%SZ")
-        temporary_path.replace(path)
+        checkpoint = self.checkpoint_path(run)
+        if overwrite:
+            checkpoint.unlink(missing_ok=True)
+
+        if checkpoint.exists():
+            frame = pd.read_csv(
+                checkpoint,
+                parse_dates=[schema.INIT_TIME_UTC, schema.VALID_TIME_UTC],
+            )
+            completed = set(frame[schema.LEAD_HOURS].astype(int))
+        else:
+            frame = pd.DataFrame()
+            completed = set()
+
+        total = len(run.leads)
+        for position, lead in enumerate(run.leads, start=1):
+            if lead in completed:
+                continue
+            row = pd.DataFrame([self.fetch_row(run, lead)])
+            frame = pd.concat([frame, row], ignore_index=True)
+            frame = frame.sort_values(schema.LEAD_HOURS).reset_index(drop=True)
+            self._write_csv_atomic(frame, checkpoint)
+            print(
+                f"    {run.slug}: saved lead {lead:03d} "
+                f"({position}/{total})",
+                flush=True,
+            )
+
+        # Renaming a complete checkpoint is atomic. A failed or interrupted
+        # run deliberately leaves the partial file in place for the next call.
+        checkpoint.replace(path)
         return path
 
     def ingest(

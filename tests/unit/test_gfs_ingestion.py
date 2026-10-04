@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
 from rdu_temperature.pipeline.ingest_gfs import (
     COARSE_LEAD_STEP,
     HOURLY_LEAD_LIMIT,
+    GfsIngestion,
     GfsRun,
     RunPlan,
     available_leads,
@@ -135,3 +138,42 @@ def test_cutoffs_sharing_a_run_are_fetched_once() -> None:
     runs = plan.for_cutoffs(close_together)
 
     assert len(runs) == 1
+
+
+def test_interrupted_run_resumes_from_the_last_saved_lead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = GfsRun(pd.Timestamp("2026-09-16 12:00:00"), (16, 17, 18))
+    ingestion = GfsIngestion(
+        "KRDU",
+        35.8922,
+        -78.7819,
+        tmp_path,
+        fields=(),
+    )
+    calls: list[int] = []
+
+    def interrupted_fetch(_run: GfsRun, lead: int) -> dict[str, float]:
+        calls.append(lead)
+        if lead == 17:
+            raise RuntimeError("simulated timeout")
+        return {"TMP": 290.0 + lead}
+
+    monkeypatch.setattr(ingestion, "fetch_lead", interrupted_fetch)
+    with pytest.raises(RuntimeError, match="simulated timeout"):
+        ingestion.ingest_run(run)
+
+    checkpoint = ingestion.checkpoint_path(run)
+    saved = pd.read_csv(checkpoint)
+    assert saved["lead_hours"].tolist() == [16]
+
+    def resumed_fetch(_run: GfsRun, lead: int) -> dict[str, float]:
+        calls.append(lead)
+        return {"TMP": 290.0 + lead}
+
+    monkeypatch.setattr(ingestion, "fetch_lead", resumed_fetch)
+    result = ingestion.ingest_run(run)
+
+    assert calls == [16, 17, 17, 18]
+    assert not checkpoint.exists()
+    assert pd.read_csv(result)["lead_hours"].tolist() == [16, 17, 18]

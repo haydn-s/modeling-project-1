@@ -183,8 +183,10 @@ PYTHONPATH=src python -m rdu_temperature.pipeline.clean_gfs
 
 For covariates over the backtest folds as well, pass `--runs seasonal` (one run
 per September fold) or `--runs rolling --fold-step 4` (every fourth rolling
-fold). Runs are written one file per initialisation and an existing file is
-skipped, so a long fetch can be interrupted and resumed, or built up in stages.
+fold). Each completed lead is saved to a `.partial.csv` checkpoint. If NOAA
+times out or the process is interrupted, running the same command again resumes
+after the last saved lead; the checkpoint becomes the final run file only when
+the run is complete.
 
 `data/processed/gfs_forecast_panel.parquet` holds one row per station, run, and
 valid hour, in the same column vocabulary as the observation panel.
