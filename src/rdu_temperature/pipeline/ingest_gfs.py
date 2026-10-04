@@ -340,8 +340,7 @@ class GfsIngestion:
             frame = frame.sort_values(schema.LEAD_HOURS).reset_index(drop=True)
             self._write_csv_atomic(frame, checkpoint)
             print(
-                f"    {run.slug}: saved lead {lead:03d} "
-                f"({position}/{total})",
+                f"    {run.slug}: saved lead {lead:03d} ({position}/{total})",
                 flush=True,
             )
 

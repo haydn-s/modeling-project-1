@@ -275,6 +275,19 @@ Run the cleaning pipeline from the repository root once ingestion has finished:
 PYTHONPATH=src python -m rdu_temperature.pipeline.clean_weather
 ```
 
+To build the RDU target without the optional ECONet credential, ingest and
+clean the two public airport-observation sources. These are the only sources
+used to construct `rdu_hourly_target.parquet`:
+
+```bash
+PYTHONPATH=src python -m rdu_temperature.pipeline.ingest_weather \
+  --source noaa-ghcnh \
+  --source iem-asos
+PYTHONPATH=src python -m rdu_temperature.pipeline.clean_weather \
+  --source noaa-ghcnh \
+  --source iem-asos
+```
+
 Existing outputs are protected unless `--overwrite` is supplied. The run writes
 three files beneath `data/processed/`:
 
