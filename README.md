@@ -324,7 +324,21 @@ and coalesced into the target series, which is then written with the panel.
 
 ## Modeling approach
 
-To be completed.
+The GFS-correcting XGBoost model uses historical forecast/observation pairs and
+learns the residual `observed temperature - GFS temperature`. The correction
+is added back to GFS rather than asking a small dataset to relearn temperature
+from scratch. It holds out the latest historical GFS run for forward
+validation, performs embedded gain-based feature selection on training rows
+only, and then refits on all historical pairs before forecasting the final 336
+hours:
+
+```bash
+PYTHONPATH=src python -m rdu_temperature.models.run_xgboost
+```
+
+The command writes the fitted model, validation metrics, selected features,
+and a final forecast containing both corrected XGBoost and raw GFS temperature.
+The raw GFS column is the baseline the statistical correction must beat.
 
 ## Evaluation
 

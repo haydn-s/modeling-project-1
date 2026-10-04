@@ -78,6 +78,9 @@ jobs:
           for module in \
             rdu_temperature.pipeline.ingest_weather \
             rdu_temperature.pipeline.clean_weather \
+            rdu_temperature.pipeline.ingest_gfs \
+            rdu_temperature.pipeline.clean_gfs \
+            rdu_temperature.models.run_xgboost \
             rdu_temperature.evaluation.backtest \
             rdu_temperature.evaluation.compare \
             rdu_temperature.evaluation.figures
