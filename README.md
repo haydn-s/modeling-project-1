@@ -55,6 +55,17 @@ Only information available before September 17, 2026 at 12:00 a.m. may be used t
    pip install -r requirements.txt
    ```
 
+   On macOS, XGBoost also needs the OpenMP runtime, which is a system package
+   rather than a wheel. Without it `import xgboost` fails, and because the
+   `models` and `evaluation` packages re-export the XGBoost classes, that
+   failure takes the whole test suite with it:
+
+   ```bash
+   brew install libomp
+   ```
+
+   Linux wheels carry their own OpenMP, so CI needs nothing extra.
+
 3. Install the commit-message hook:
 
    ```bash
@@ -151,7 +162,64 @@ Five years is the initial analysis window. The project may expand this to ten
 years later to evaluate whether the additional annual cycles improve model
 performance.
 
-### Deferred: forecast covariates
+## GFS forecast covariates
+
+NOAA GFS supplies the one thing observations cannot: a prediction for a period
+that has not happened. A model run records when it was initialised, so a run
+that started before the data cutoff knew nothing after it, and its forecasts
+for the scored window are fair to use. This is shared infrastructure — the
+panel it produces is model-agnostic, and both the Prophet and XGBoost work read
+from it.
+
+Fetch the run that covers the forecast period, then build the panel:
+
+```bash
+PYTHONPATH=src python -m rdu_temperature.pipeline.ingest_gfs --runs forecast
+```
+
+```bash
+PYTHONPATH=src python -m rdu_temperature.pipeline.clean_gfs
+```
+
+For covariates over the backtest folds as well, pass `--runs seasonal` (one run
+per September fold) or `--runs rolling --fold-step 4` (every fourth rolling
+fold). Each completed lead is saved to a `.partial.csv` checkpoint. If NOAA
+times out or the process is interrupted, running the same command again resumes
+after the last saved lead; the checkpoint becomes the final run file only when
+the run is complete.
+
+`data/processed/gfs_forecast_panel.parquet` holds one row per station, run, and
+valid hour, in the same column vocabulary as the observation panel.
+
+### What to know before using it
+
+- **Bandwidth is the cost, not disk.** A GFS 0.25-degree file is about 520 MB
+  and the project wants six fields at one grid point, so each file is read by
+  byte range through its `.idx` sidecar: about half a megabyte per field
+  instead of 520. Only the extracted point values are kept, so the forecast run
+  is 28 KB on disk against roughly 0.76 GB transferred. A full rolling fetch
+  moves about 20 GB and stores under a megabyte.
+- **The back of the horizon is coarser than the front.** The product is hourly
+  to 120 hours and three-hourly beyond, so 154 of the forecast window's 336
+  hours are interpolated between published leads. Every row carries an
+  `interpolated` flag, so a result that leans on them can be told from one that
+  does not.
+- **Wind is interpolated as components, then converted.** Bearings cannot be
+  interpolated across north, where the arithmetic midpoint of 350 and 10
+  degrees is due south. Eastward and northward components are filled first and
+  the speed and bearing derived afterwards.
+- **Training folds get the same lead time as the real forecast.** Each fold's
+  covariate comes from a run initialised the same number of hours before its
+  cutoff as the real run is before the real cutoff. A fold handed a fresher run
+  would learn from a covariate better than the one it will be used with.
+- **`PRATE`, not `APCP`.** Accumulated precipitation is published over windows
+  that change with lead, which cannot be placed on an hourly grid without
+  inventing a disaggregation. `PRATE` is the rate at the valid hour.
+- **The archive begins in spring 2021**, which covers this project's window.
+  The note below previously said January 2021; probing the bucket puts the
+  earliest 0.25-degree run between March and June of that year.
+
+### Superseded: forecast covariates
 
 Numerical weather prediction archives encode each run's initialization time in
 its file path, so a run initialized before the cutoff can legitimately supply
@@ -162,7 +230,11 @@ lead, archived from 2023-01-18) each cover the full target window from the
 with this project's 2021 ingestion window, which is what makes it possible to
 train on matched forecast and observation pairs.
 
-This is deferred. The current approach uses observations only.
+GFS is now implemented; see the section above. Two details in this note turned
+out to be wrong once the archive was probed: the 0.25-degree archive begins in
+spring 2021 rather than on January 1, and the product is hourly only to 120
+hours, so most of a fourteen-day horizon arrives three-hourly. Neither changes
+the conclusion that GFS was the right candidate.
 
 Open-Meteo is not a safe substitute. Its archive endpoint returns ERA5
 reanalysis, and its previous-runs endpoint returns a `temperature_2m` series
@@ -203,6 +275,19 @@ Run the cleaning pipeline from the repository root once ingestion has finished:
 PYTHONPATH=src python -m rdu_temperature.pipeline.clean_weather
 ```
 
+To build the RDU target without the optional ECONet credential, ingest and
+clean the two public airport-observation sources. These are the only sources
+used to construct `rdu_hourly_target.parquet`:
+
+```bash
+PYTHONPATH=src python -m rdu_temperature.pipeline.ingest_weather \
+  --source noaa-ghcnh \
+  --source iem-asos
+PYTHONPATH=src python -m rdu_temperature.pipeline.clean_weather \
+  --source noaa-ghcnh \
+  --source iem-asos
+```
+
 Existing outputs are protected unless `--overwrite` is supplied. The run writes
 three files beneath `data/processed/`:
 
@@ -239,7 +324,21 @@ and coalesced into the target series, which is then written with the panel.
 
 ## Modeling approach
 
-To be completed.
+The GFS-correcting XGBoost model uses historical forecast/observation pairs and
+learns the residual `observed temperature - GFS temperature`. The correction
+is added back to GFS rather than asking a small dataset to relearn temperature
+from scratch. It holds out the latest historical GFS run for forward
+validation, performs embedded gain-based feature selection on training rows
+only, and then refits on all historical pairs before forecasting the final 336
+hours:
+
+```bash
+PYTHONPATH=src python -m rdu_temperature.models.run_xgboost
+```
+
+The command writes the fitted model, validation metrics, selected features,
+and a final forecast containing both corrected XGBoost and raw GFS temperature.
+The raw GFS column is the baseline the statistical correction must beat.
 
 ## Evaluation
 

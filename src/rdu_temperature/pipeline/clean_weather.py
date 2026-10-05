@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -426,6 +426,19 @@ NORMALIZERS: tuple[type[SourceNormalizer], ...] = (
     EconetNormalizer,
 )
 
+NORMALIZER_BY_SOURCE: Mapping[str, type[SourceNormalizer]] = {
+    normalizer.source_name: normalizer for normalizer in NORMALIZERS
+}
+
+# Keep the CLI names aligned with ingest_weather while the raw directories and
+# canonical source column continue to use Python-friendly underscores.
+CLI_SOURCE_NAMES: Mapping[str, str] = {
+    "noaa-ghcnh": "noaa_ghcnh",
+    "iem-asos": "iem_asos",
+    "open-meteo": "open_meteo",
+    "ncsco-econet": "ncsco_econet",
+}
+
 
 class WeatherCleaningApp:
     """Load configuration and run every cleaning stage end to end."""
@@ -443,7 +456,29 @@ class WeatherCleaningApp:
         self.input_dir = input_dir
         self.output_dir = output_dir
 
-    def run(self, *, overwrite: bool = False) -> dict[str, Path]:
+    def run(
+        self,
+        *,
+        sources: Sequence[str] | None = None,
+        overwrite: bool = False,
+    ) -> dict[str, Path]:
+        """Clean all available sources, or only the explicitly selected ones.
+
+        A partial run is useful when a teammate needs the RDU target but does
+        not have the optional ECONet credential. The target itself is sourced
+        only from GHCNh and IEM, so those public sources are sufficient.
+        """
+        requested = (
+            tuple(sources) if sources is not None else tuple(NORMALIZER_BY_SOURCE)
+        )
+        unknown = sorted(set(requested).difference(NORMALIZER_BY_SOURCE))
+        if unknown:
+            raise ValueError(f"Unknown cleaning sources: {unknown}.")
+        if not set(requested).intersection(self.target.priority):
+            raise ValueError(
+                f"At least one target source is required: {list(self.target.priority)}."
+            )
+
         outputs = {
             "panel": self.output_dir / self.panel_filename,
             "target": self.output_dir / self.target_filename,
@@ -456,7 +491,8 @@ class WeatherCleaningApp:
             )
 
         aligned: dict[str, pd.DataFrame] = {}
-        for normalizer in NORMALIZERS:
+        for source_name in requested:
+            normalizer = NORMALIZER_BY_SOURCE[source_name]
             print(f"Normalizing {normalizer.source_name}...", flush=True)
             aligned[normalizer.source_name] = normalizer(self.registry).align(
                 self.input_dir, self.grid
@@ -499,11 +535,24 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--input-dir", type=Path, default=DEFAULT_INPUT_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--source",
+        action="append",
+        choices=("all", *CLI_SOURCE_NAMES),
+        default=None,
+        help=(
+            "Raw source to clean; repeat for multiple sources. Defaults to all. "
+            "GHCNh plus IEM are sufficient to build the RDU target."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
     app = WeatherCleaningApp(args.config, args.input_dir, args.output_dir)
-    app.run(overwrite=args.overwrite)
+    selected = None
+    if args.source and "all" not in args.source:
+        selected = [CLI_SOURCE_NAMES[source] for source in args.source]
+    app.run(sources=selected, overwrite=args.overwrite)
 
 
 if __name__ == "__main__":

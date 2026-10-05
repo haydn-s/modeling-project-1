@@ -133,6 +133,32 @@ def test_target_prefers_ghcnh_and_falls_through_to_iem(
     assert target["temperature_c"].tolist() == [10.0, 11.0, pytest.approx(12.0), 13.0]
 
 
+def test_public_target_sources_can_be_cleaned_without_optional_sources(
+    workspace: tuple[Path, Path, Path],
+) -> None:
+    config_path, raw_dir, output_dir = workspace
+
+    outputs = WeatherCleaningApp(config_path, raw_dir, output_dir).run(
+        sources=("noaa_ghcnh", "iem_asos")
+    )
+    panel = pd.read_parquet(outputs["panel"])
+    target = pd.read_parquet(outputs["target"])
+
+    assert sorted(panel["source"].unique()) == ["iem_asos", "noaa_ghcnh"]
+    assert target["temperature_c"].notna().all()
+
+
+def test_cleaning_requires_a_source_that_can_build_the_target(
+    workspace: tuple[Path, Path, Path],
+) -> None:
+    config_path, raw_dir, output_dir = workspace
+
+    with pytest.raises(ValueError, match="At least one target source"):
+        WeatherCleaningApp(config_path, raw_dir, output_dir).run(
+            sources=("open_meteo",)
+        )
+
+
 def test_cleaning_run_records_local_time_and_protects_existing_output(
     workspace: tuple[Path, Path, Path],
 ) -> None:

@@ -24,6 +24,11 @@ optuna==5.0.0
 python-dotenv==1.2.3
 requests==2.34.2
 
+# GRIB2 decoding for archived GFS forecast covariates. The eccodes wheel
+# bundles the ECMWF C library, so no system package is needed for these two.
+cfgrib==0.9.15.1
+eccodes==2.49.0
+
 # Interactive development
 ipykernel==7.3.0
 
