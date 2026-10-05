@@ -340,6 +340,36 @@ The command writes the fitted model, validation metrics, selected features,
 and a final forecast containing both corrected XGBoost and raw GFS temperature.
 The raw GFS column is the baseline the statistical correction must beat.
 
+Prophet corrects the same forecast a different way, taking GFS temperature as a
+regressor rather than learning the residual with trees. It is backtested
+separately, because a covariate model can only be scored where a GFS run
+reaches:
+
+```bash
+PYTHONPATH=src python -m rdu_temperature.models.run_covariate_prophet
+```
+
+Pass `--rebuild-panel` after fetching new runs. The command writes
+`covariate_backtest_summary.csv` and a paired bootstrap against raw GFS in
+`covariate_comparison.csv`, and leaves the univariate `backtest_summary.csv`
+untouched.
+
+Two things about it are worth knowing before reading its numbers.
+
+- **Prophet's own trend and seasonality are off by default.** Training is
+  restricted to the hours a covariate exists for — about a fifth of the
+  observed grid, sampled as fortnights rather than spanning years — and a
+  yearly term fit on that sample is confident and wrong. Left on, the model
+  measures *worse than reading the GFS number straight off the file*. Off, it
+  is a pure statistical correction of GFS and is the first model here to beat
+  climatology on a paired test. `seasonality=True` keeps the comparison
+  available, since the finding depends on how the archive was sampled.
+- **Its baselines will not match `backtest_summary.csv`.** Every model is
+  scored on the same folds, which are the 19 rolling and 2 seasonal folds that
+  have both a covered horizon and a year of covariate history behind them —
+  a subset, and a differently weighted one. An average over a different set of
+  fortnights is not comparable, so the pairing is kept exact instead.
+
 ## Evaluation
 
 To be completed.
