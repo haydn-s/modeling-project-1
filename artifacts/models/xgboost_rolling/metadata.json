@@ -1,0 +1,45 @@
+{
+  "artifact_version": 1,
+  "early_stopping_rounds": null,
+  "forbidden_features": [
+    "temperature_c",
+    "temperature_source"
+  ],
+  "forecaster_features": [
+    "target_day_of_year_sin",
+    "gfs_temperature_c",
+    "target_day_of_year_cos",
+    "gfs_precipitation_mm",
+    "target_hour_sin",
+    "gfs_dewpoint_c",
+    "forecast_lead_hour",
+    "gfs_interpolated"
+  ],
+  "selected_features": [
+    "target_day_of_year_sin",
+    "gfs_temperature_c",
+    "target_day_of_year_cos",
+    "gfs_precipitation_mm",
+    "target_hour_sin",
+    "gfs_dewpoint_c",
+    "forecast_lead_hour",
+    "gfs_interpolated"
+  ],
+  "selector_importances": {
+    "forecast_lead_hour": 0.08121100068092346,
+    "gfs_cloud_cover_pct": 0.03189504146575928,
+    "gfs_dewpoint_c": 0.08551858365535736,
+    "gfs_interpolated": 0.07539573311805725,
+    "gfs_precipitation_mm": 0.09391599148511887,
+    "gfs_temperature_c": 0.12208481878042221,
+    "gfs_wind_direction_cos": 0.054949164390563965,
+    "gfs_wind_direction_sin": 0.04215334728360176,
+    "gfs_wind_speed_ms": 0.03908095508813858,
+    "target_day_of_year_cos": 0.10998716950416565,
+    "target_day_of_year_sin": 0.139555886387825,
+    "target_hour_cos": 0.031441595405340195,
+    "target_hour_sin": 0.09281069785356522
+  },
+  "selector_max_features": 8,
+  "selector_min_importance": 0.0
+}
