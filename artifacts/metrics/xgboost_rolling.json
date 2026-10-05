@@ -1,0 +1,28 @@
+{
+  "training_rows": 9471,
+  "historical_runs": 29,
+  "validation_run": "2026-07-17 12:00:00",
+  "validation_rows": 336,
+  "target_definition": "observed_temperature_c - gfs_temperature_c",
+  "xgboost_validation": {
+    "mae_c": 1.7924501632818213,
+    "rmse_c": 2.387373401929921,
+    "bias_c": 0.2249461136364454
+  },
+  "raw_gfs_validation": {
+    "mae_c": 2.702007374435509,
+    "rmse_c": 3.5015176999755044,
+    "bias_c": 1.2059170879384533
+  },
+  "best_iteration": 379,
+  "selected_features": [
+    "target_day_of_year_sin",
+    "gfs_temperature_c",
+    "target_day_of_year_cos",
+    "gfs_precipitation_mm",
+    "target_hour_sin",
+    "gfs_dewpoint_c",
+    "forecast_lead_hour",
+    "gfs_interpolated"
+  ]
+}
