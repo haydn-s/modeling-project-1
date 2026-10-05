@@ -198,6 +198,61 @@ def covered_cutoffs(
     return covered
 
 
+def covariate_history(
+    frame: pd.DataFrame, panel: pd.DataFrame, cutoff: pd.Timestamp
+) -> pd.DataFrame:
+    """The rows before ``cutoff`` that have both an observation and a covariate.
+
+    What a covariate model can actually learn from at a fold, as opposed to
+    what the observed grid offers it. The two differ by a lot: see
+    :func:`trainable_cutoffs`.
+    """
+    history = frame.loc[frame[prophet_frame.DS] < cutoff]
+    joined = attach_available(history, panel, cutoff)
+    return joined.dropna(subset=[f"{PREFIX}{schema.TEMPERATURE_C}", prophet_frame.Y])
+
+
+def trainable_cutoffs(
+    frame: pd.DataFrame,
+    panel: pd.DataFrame,
+    cutoffs: Sequence[pd.Timestamp],
+    hours: int = prophet_frame.FORECAST_HOURS,
+    minimum_training_days: int = 365,
+) -> list[pd.Timestamp]:
+    """Covered folds whose covariate history also spans an annual cycle.
+
+    :func:`covered_cutoffs` asks whether a fold can be *forecast*. This asks
+    the other half: whether it can be *trained* for. The two come apart badly,
+    because a run is fetched to cover its own fold's horizon and nothing
+    before it. So the covariate history reaching a fold is the union of
+    earlier runs' windows, and it grows one fortnight per earlier run: the
+    first covered fold has none at all, the second has fourteen days, and even
+    the last has about a fifth of the hours the univariate models train on.
+
+    Hours are the wrong thing to count. A model with a thousand covariate
+    hours drawn from one fortnight has seen one season; the same thousand
+    spread across four years has sampled the year. What a yearly seasonality
+    needs is the **span**, so that is the bar.
+
+    ``minimum_training_days`` should be the annual cycle the backtest already
+    requires of every other model, and the covariate runner passes
+    ``backtest.MINIMUM_TRAINING_DAYS`` for exactly that reason: a fold either
+    clears the same bar for everyone or is not scored. It is a parameter and
+    not an import because this module sits underneath the backtest, which
+    reads from it.
+    """
+    span_required = pd.Timedelta(days=minimum_training_days)
+    trainable: list[pd.Timestamp] = []
+    for cutoff in covered_cutoffs(panel, cutoffs, hours):
+        usable = covariate_history(frame, panel, cutoff)
+        if usable.empty:
+            continue
+        span = usable[prophet_frame.DS].max() - usable[prophet_frame.DS].min()
+        if span >= span_required:
+            trainable.append(cutoff)
+    return trainable
+
+
 def attach_available(
     frame: pd.DataFrame, panel: pd.DataFrame, cutoff: pd.Timestamp
 ) -> pd.DataFrame:
