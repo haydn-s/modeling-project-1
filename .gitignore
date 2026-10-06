@@ -16,3 +16,7 @@ data/processed/**/*.csv
 # means nobody on the team fetches the same bytes twice, and CI could use them.
 !data/raw/noaa_gfs/
 !data/raw/noaa_gfs/*.csv
+
+# macOS and Word scratch files
+.DS_Store
+~$*
