@@ -208,6 +208,87 @@ def test_covered_cutoffs_are_empty_without_a_panel() -> None:
     assert fc.covered_cutoffs(empty, [CUTOFF], hours=24) == []
 
 
+def _observed(first: str, hours: int) -> pd.DataFrame:
+    """A Prophet frame of observations, as the backtest hands one over."""
+    return pf.add_season_flags(
+        pd.DataFrame(
+            {
+                pf.DS: pd.date_range(pd.Timestamp(first), periods=hours, freq="h"),
+                pf.Y: [18.0] * hours,
+            }
+        )
+    )
+
+
+def test_covariate_history_counts_only_hours_with_both() -> None:
+    frame = _observed("2025-01-01 00:00", 24 * 40)
+    # A run covering a single day inside the observed stretch.
+    panel = _panel("2025-01-09 12:00", "2025-01-10 00:00", 24)
+    cutoff = pd.Timestamp("2025-02-10 00:00")
+
+    usable = fc.covariate_history(frame, panel, cutoff)
+
+    # The frame offers 960 hours; the panel covers 24 of them, and a regressor
+    # has to exist on every row Prophet fits.
+    assert len(usable) == 24
+    assert usable["gfs_temperature_c"].notna().all()
+
+
+def test_covariate_history_excludes_the_forecast_period() -> None:
+    frame = _observed("2025-01-01 00:00", 24 * 40)
+    panel = _panel("2025-01-09 12:00", "2025-01-10 00:00", 24)
+    # A cutoff before the run: nothing it says is legitimately known yet.
+    cutoff = pd.Timestamp("2025-01-05 00:00")
+
+    assert fc.covariate_history(frame, panel, cutoff).empty
+
+
+def test_trainable_cutoffs_require_a_year_of_covariate_span() -> None:
+    frame = _observed("2024-01-01 00:00", 24 * 800)
+    cutoff = pd.Timestamp("2025-06-01 00:00")
+    # Covariates for the fold's own horizon, plus two earlier days a month
+    # apart. The fold can be forecast, but a month is not an annual cycle.
+    panel = pd.concat(
+        [
+            _panel("2025-05-31 12:00", "2025-06-01 00:00", 24),
+            _panel("2025-04-01 12:00", "2025-04-02 00:00", 24),
+            _panel("2025-05-01 12:00", "2025-05-02 00:00", 24),
+        ],
+        ignore_index=True,
+    )
+
+    assert fc.covered_cutoffs(panel, [cutoff], hours=24) == [cutoff]
+    assert fc.trainable_cutoffs(frame, panel, [cutoff], hours=24) == []
+
+
+def test_trainable_cutoffs_keep_a_fold_whose_history_spans_the_year() -> None:
+    frame = _observed("2024-01-01 00:00", 24 * 800)
+    cutoff = pd.Timestamp("2025-06-01 00:00")
+    # The same fold with the same number of covariate hours, the earlier of
+    # the two days moved back beyond a year. Only the span changed, which is
+    # the whole point of measuring span rather than counting hours.
+    panel = pd.concat(
+        [
+            _panel("2025-05-31 12:00", "2025-06-01 00:00", 24),
+            _panel("2024-04-01 12:00", "2024-04-02 00:00", 24),
+            _panel("2025-05-01 12:00", "2025-05-02 00:00", 24),
+        ],
+        ignore_index=True,
+    )
+
+    assert fc.trainable_cutoffs(frame, panel, [cutoff], hours=24) == [cutoff]
+
+
+def test_trainable_cutoffs_drop_a_fold_with_no_history_at_all() -> None:
+    frame = _observed("2024-01-01 00:00", 24 * 800)
+    cutoff = pd.Timestamp("2025-06-01 00:00")
+    # The earliest covered fold: its run covers the horizon and nothing
+    # before it, so there is nothing to learn the correction from.
+    panel = _panel("2025-05-31 12:00", "2025-06-01 00:00", 24)
+
+    assert fc.trainable_cutoffs(frame, panel, [cutoff], hours=24) == []
+
+
 def test_load_panel_reports_a_missing_panel(tmp_path) -> None:
     with pytest.raises(FileNotFoundError, match="clean_gfs"):
         fc.load_panel(tmp_path / "absent.parquet")

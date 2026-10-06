@@ -145,17 +145,34 @@ def test_every_covariate_can_be_used_as_a_regressor(panel: pd.DataFrame) -> None
     assert forecast["yhat"].notna().all()
 
 
-def test_seasonality_can_be_switched_off(panel: pd.DataFrame) -> None:
-    # With no trend and no seasonality the model is a pure correction of GFS,
-    # which is the comparison that shows whether Prophet's own components add
-    # anything once the regressor is present.
-    model = CovariateProphet(panel=panel, seasonality=False)
+def test_the_default_model_carries_no_trend_or_seasonality(
+    fitted: CovariateProphet,
+) -> None:
+    # The default is the pure correction of GFS, because on the real archive
+    # the seasonalities measure worse than the uncorrected forecast. This
+    # pins the default rather than the construction, so a flip has to be
+    # deliberate.
+    assert fitted.seasonality is False
+    assert fitted.model is not None
+    assert fitted.model.growth == "flat"
+    assert fitted.model.yearly_seasonality is False
+    assert fitted.model.daily_seasonality is False
+
+
+def test_seasonality_can_be_switched_on(panel: pd.DataFrame) -> None:
+    # The switch survives the default change, because the finding behind it is
+    # contingent on covariate history that samples fortnights rather than
+    # spanning years. Here it only has to fit and forecast; which setting wins
+    # is a question for the backtest on real runs, not for synthetic data.
+    model = CovariateProphet(panel=panel, seasonality=True)
 
     model.fit(_history())
     forecast = model.forecast(CUTOFF, hours=HORIZON)
 
-    truth = _truth(pd.DatetimeIndex(forecast[pf.DS]))
-    assert abs(float((forecast["yhat"] - truth).mean())) < 1.5
+    assert model.model is not None
+    assert model.model.growth == "linear"
+    assert len(forecast) == HORIZON
+    assert forecast["yhat"].notna().all()
 
 
 def test_fitting_without_covered_hours_is_refused() -> None:

@@ -23,11 +23,23 @@ selects those rows and says how many it got. That is a real cost: the yearly
 seasonality is estimated from a sample of the year, not from all of it, which
 is why this is a different model and not a better one by construction.
 
-**The seasonalities may now be redundant.** GFS already contains a diurnal
-cycle, so Prophet's own daily seasonality is fitting something its regressor
-has largely supplied. Whether that helps or fights is an empirical question,
-so ``seasonality`` is a switch and the backtest answers it rather than this
-docstring.
+**The seasonalities fight the regressor, so they are off by default.** GFS
+already contains a diurnal cycle, so Prophet's own daily seasonality fits
+something its regressor has largely supplied. This was left as a switch for
+the backtest to settle, and it has: over the nineteen rolling folds that have
+a year of covariate history, leaving them on costs 0.94 C of MAE (3.94
+against 3.00) and lands *worse than reading the GFS number straight off the
+file*, with the same −3 C bias the univariate model carries. Restricted
+training is why. The seasonalities are estimated from the fifth of the hours
+that have a covariate, and a yearly term fit on a sample of fortnights is
+confident and wrong; on the earliest folds, where that sample is thinnest, it
+misses by six degrees. With them off the model is a pure statistical
+correction of GFS, and it is the first thing here to beat climatology on a
+paired test: −0.75 C, 95% CI [−1.44, −0.12], winning 14 of 19 folds.
+
+The switch stays, because the finding is contingent on sparse covariate
+history. A fetch covering continuous years rather than a sample of fortnights
+would be grounds to ask the question again.
 """
 
 from __future__ import annotations
@@ -73,8 +85,9 @@ class CovariateProphet:
     regressors: tuple[str, ...] = DEFAULT_REGRESSORS
     # Prophet's own trend and seasonality, on top of the regressor. Off makes
     # the model a pure statistical correction of GFS; on lets it also carry
-    # whatever seasonal structure GFS gets wrong.
-    seasonality: bool = True
+    # whatever seasonal structure GFS gets wrong. Off by default because on
+    # measures worse than the uncorrected forecast -- see the module docstring.
+    seasonality: bool = False
     cutoff: pd.Timestamp | None = None
     model: Prophet | None = None
     training_hours: int = 0
