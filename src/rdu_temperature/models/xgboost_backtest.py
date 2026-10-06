@@ -353,7 +353,7 @@ def main() -> None:
     parser.add_argument(
         "--target", type=Path, default=prophet_frame.DEFAULT_TARGET_PATH
     )
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_METRICS_DIR)
     parser.add_argument("--step-days", type=int, default=14)
     parser.add_argument(
         "--fold",
