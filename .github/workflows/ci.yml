@@ -71,22 +71,29 @@ jobs:
       # reach. Parsing their arguments is enough to catch a broken import or a
       # malformed flag, which is the failure mode that would otherwise only
       # surface when somebody ran the pipeline by hand.
+      #
+      # The modules are discovered rather than listed. A hand-kept list is a
+      # serialization point: every branch that adds a model edits the same
+      # line, so three in a row conflicted here, and run_xgboost_rolling was
+      # simply never added to it and went unchecked for as long as it existed.
+      # Anything with a __main__ block is an entry point by definition, so
+      # that is the question asked.
       - name: Check command-line entry points
         env:
           PYTHONPATH: src
         run: |
-          for module in \
-            rdu_temperature.pipeline.ingest_weather \
-            rdu_temperature.pipeline.clean_weather \
-            rdu_temperature.pipeline.ingest_gfs \
-            rdu_temperature.pipeline.clean_gfs \
-            rdu_temperature.models.run_xgboost \
-            rdu_temperature.models.run_covariate_prophet \
-            rdu_temperature.models.run_linear \
-            rdu_temperature.models.xgboost_backtest \
-            rdu_temperature.evaluation.backtest \
-            rdu_temperature.evaluation.compare \
-            rdu_temperature.evaluation.figures
+          set -euo pipefail
+          modules="$(grep -rl '^if __name__ == "__main__":' src --include='*.py' \
+            | sed 's|^src/||; s|\.py$||; s|/|.|g' | sort)"
+          # An empty result would pass a loop that never runs, reporting a
+          # green check for nothing tested. If the convention ever changes,
+          # this should fail loudly instead.
+          if [ -z "$modules" ]; then
+            echo "::error::No __main__ modules found under src/; the discovery is broken."
+            exit 1
+          fi
+          echo "Discovered $(echo "$modules" | wc -l | tr -d ' ') entry point(s)."
+          for module in $modules
           do
             echo "::group::$module --help"
             python -m "$module" --help
