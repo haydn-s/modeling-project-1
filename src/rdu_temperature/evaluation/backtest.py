@@ -39,6 +39,7 @@ import pandas as pd
 
 from rdu_temperature.features import prophet_frame
 from rdu_temperature.models.baselines import Climatology, SeasonalPersistence
+from rdu_temperature.models.linear_model import LinearTemperatureModel
 from rdu_temperature.models.prophet_model import ProphetConfig, TemperatureProphet
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -67,6 +68,7 @@ ModelFactory = Callable[[], ForecastModel]
 
 MODELS: Mapping[str, ModelFactory] = {
     "prophet": lambda: TemperatureProphet(ProphetConfig()),
+    "linear": LinearTemperatureModel,
     "climatology": Climatology,
     "persistence": SeasonalPersistence,
 }

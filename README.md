@@ -340,6 +340,28 @@ The command writes the fitted model, validation metrics, selected features,
 and a final forecast containing both corrected XGBoost and raw GFS temperature.
 The raw GFS column is the baseline the statistical correction must beat.
 
+### Linear regression
+
+Two linear regression models live in `models/linear_model.py`:
+
+- `LinearTemperatureModel` (`linear`) uses calendar time only: a trend plus
+  daily and annual Fourier terms and their interaction, with the mean residual
+  of the last three days added back and decayed over the horizon.
+- `GfsLinearModel` (`linear_gfs`) regresses the observation on the GFS
+  temperature forecast, lead time, their interaction and a few calendar terms,
+  trained on every forecast/observation pair issued before the cutoff.
+
+Backtest both and write the submission forecast with:
+
+```bash
+PYTHONPATH=src python -m rdu_temperature.models.run_linear
+```
+
+It does not need Prophet. The calendar model is scored on the same seasonal and
+rolling folds as `evaluation.backtest`; the GFS model on the folds a covariate
+model can be trained for, the same rule `run_covariate_prophet` uses. Outputs
+go to `artifacts/metrics/linear_*.csv` and `artifacts/predictions/linear_forecast.csv`.
+
 ## Evaluation
 
 To be completed.
