@@ -20,6 +20,13 @@ decay. That correction uses only hours before the cutoff, so it leaks nothing.
 
 The interval is the point forecast plus or minus a multiple of the residual
 standard deviation, which assumes roughly normal, constant-spread errors.
+
+:class:`GfsLinearModel` is the second linear model. Instead of calendar time
+alone it regresses the observation on the GFS temperature forecast that was
+issued before the cutoff (model output statistics). GFS skill falls with lead
+time, so lead time and a GFS-by-lead interaction let the fitted slope shrink
+toward the mean at long leads instead of trusting a twelve-day forecast as
+much as a twelve-hour one.
 """
 
 from __future__ import annotations
@@ -30,7 +37,8 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
-from rdu_temperature.features import prophet_frame
+from rdu_temperature.features import forecast_covariates, prophet_frame
+from rdu_temperature.pipeline import schema
 
 HOURS_PER_DAY = 24
 DAYS_PER_YEAR = 365.25
@@ -167,5 +175,139 @@ class LinearTemperatureModel:
                 "yhat": yhat,
                 "yhat_lower": yhat - spread,
                 "yhat_upper": yhat + spread,
+            }
+        )
+
+
+GFS_TEMPERATURE = f"{forecast_covariates.PREFIX}{schema.TEMPERATURE_C}"
+
+
+def gfs_features(rows: pd.DataFrame, daily_harmonics: int = 2) -> pd.DataFrame:
+    """Design matrix for :class:`GfsLinearModel` from joined GFS rows.
+
+    ``rows`` carries the prefixed GFS temperature, the valid time and the lead
+    in hours, as both :func:`forecast_covariates.training_pairs` and
+    :func:`forecast_covariates.forecast_covariates` return them.
+    """
+    valid = pd.DatetimeIndex(rows[schema.VALID_TIME_UTC])
+    gfs = rows[GFS_TEMPERATURE].to_numpy(dtype="float64")
+    lead_days = rows[schema.LEAD_HOURS].to_numpy(dtype="float64") / HOURS_PER_DAY
+    hour = valid.hour.to_numpy()
+    day = valid.dayofyear.to_numpy() - 1
+
+    columns: dict[str, np.ndarray] = {
+        "gfs_temperature_c": gfs,
+        "lead_days": lead_days,
+        "gfs_x_lead_days": gfs * lead_days,
+    }
+    # GFS has a systematic diurnal and seasonal bias at a single grid point,
+    # which a few smooth calendar terms can absorb.
+    for k in range(1, daily_harmonics + 1):
+        angle = 2 * np.pi * k * hour / HOURS_PER_DAY
+        columns[f"daily_sin_{k}"] = np.sin(angle)
+        columns[f"daily_cos_{k}"] = np.cos(angle)
+    angle = 2 * np.pi * day / DAYS_PER_YEAR
+    columns["annual_sin_1"] = np.sin(angle)
+    columns["annual_cos_1"] = np.cos(angle)
+    return pd.DataFrame(columns, index=rows.index)
+
+
+@dataclass
+class GfsLinearModel:
+    """Linear regression of observed temperature on the GFS forecast.
+
+    Trained on every (forecast, observation) pair whose run was initialised
+    and whose valid hour falls before the cutoff, at every lead, so the
+    lead-time terms see the same range of leads the forecast will use.
+    """
+
+    panel: pd.DataFrame
+    daily_harmonics: int = 2
+
+    _regression: LinearRegression | None = field(default=None, repr=False)
+    _residual_std: float = field(default=float("nan"), repr=False)
+    training_pairs: int = 0
+
+    def fit(self, history: pd.DataFrame) -> GfsLinearModel:
+        cutoff = history[prophet_frame.DS].max() + pd.Timedelta(hours=1)
+        target = pd.DataFrame(
+            {
+                schema.TIMESTAMP_UTC: history[prophet_frame.DS],
+                schema.TEMPERATURE_C: history[prophet_frame.Y],
+            }
+        )
+        pairs = forecast_covariates.training_pairs(self.panel, target, cutoff)
+        pairs = pairs.dropna(subset=[GFS_TEMPERATURE])
+        if len(pairs) < 50:
+            raise ValueError(
+                f"Only {len(pairs)} GFS/observation pair(s) before {cutoff}; "
+                "fetch runs covering the training window."
+            )
+        x = gfs_features(pairs, self.daily_harmonics)
+        y = pairs[forecast_covariates.OBSERVED_TEMPERATURE_C].to_numpy("float64")
+        self._regression = LinearRegression().fit(x, y)
+        residuals = y - self._regression.predict(x)
+        self._residual_std = float(np.std(residuals, ddof=x.shape[1] + 1))
+        self.training_pairs = len(pairs)
+        return self
+
+    @property
+    def coefficients(self) -> pd.Series:
+        if self._regression is None:
+            raise RuntimeError("Call fit() before reading coefficients.")
+        names = self._regression.feature_names_in_
+        return pd.Series(self._regression.coef_, index=names).rename("coefficient")
+
+    def forecast(
+        self, cutoff: pd.Timestamp, hours: int = prophet_frame.FORECAST_HOURS
+    ) -> pd.DataFrame:
+        if self._regression is None:
+            raise RuntimeError("Call fit() before forecast().")
+        rows = forecast_covariates.forecast_covariates(self.panel, cutoff, hours)
+        rows = rows.dropna(subset=[GFS_TEMPERATURE]).reset_index(drop=True)
+        yhat = self._regression.predict(gfs_features(rows, self.daily_harmonics))
+        series = pd.Series(
+            rows[schema.VALID_TIME_UTC].to_numpy(), name=prophet_frame.DS
+        )
+        spread = INTERVAL_Z * self._residual_std
+        return pd.DataFrame(
+            {
+                prophet_frame.DS: series,
+                "timestamp_local": prophet_frame.to_local(series),
+                "yhat": yhat,
+                "yhat_lower": yhat - spread,
+                "yhat_upper": yhat + spread,
+            }
+        )
+
+
+@dataclass
+class RawGfsForecast:
+    """The GFS temperature forecast read straight off the file.
+
+    The reference :class:`GfsLinearModel` has to beat. Kept here rather than
+    imported from ``covariate_prophet`` so this module does not need Prophet.
+    """
+
+    panel: pd.DataFrame
+
+    def fit(self, history: pd.DataFrame) -> RawGfsForecast:
+        del history
+        return self
+
+    def forecast(
+        self, cutoff: pd.Timestamp, hours: int = prophet_frame.FORECAST_HOURS
+    ) -> pd.DataFrame:
+        rows = forecast_covariates.forecast_covariates(self.panel, cutoff, hours)
+        series = pd.Series(
+            rows[schema.VALID_TIME_UTC].to_numpy(), name=prophet_frame.DS
+        )
+        return pd.DataFrame(
+            {
+                prophet_frame.DS: series,
+                "timestamp_local": prophet_frame.to_local(series),
+                "yhat": rows[GFS_TEMPERATURE].to_numpy(),
+                "yhat_lower": np.nan,
+                "yhat_upper": np.nan,
             }
         )
