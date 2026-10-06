@@ -1,0 +1,28 @@
+{
+  "training_rows": 2015,
+  "historical_runs": 6,
+  "validation_run": "2025-09-16 12:00:00",
+  "validation_rows": 336,
+  "target_definition": "observed_temperature_c - gfs_temperature_c",
+  "xgboost_validation": {
+    "mae_c": 2.4322178584426575,
+    "rmse_c": 3.148015934311421,
+    "bias_c": -1.143202379392645
+  },
+  "raw_gfs_validation": {
+    "mae_c": 2.490926169743603,
+    "rmse_c": 3.3059029906786686,
+    "bias_c": -1.120745355515216
+  },
+  "best_iteration": 8,
+  "selected_features": [
+    "gfs_temperature_c",
+    "target_day_of_year_sin",
+    "target_day_of_year_cos",
+    "target_hour_sin",
+    "gfs_dewpoint_c",
+    "gfs_precipitation_mm",
+    "forecast_lead_hour",
+    "gfs_wind_speed_ms"
+  ]
+}

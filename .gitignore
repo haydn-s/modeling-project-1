@@ -7,3 +7,12 @@ __pycache__/
 data/raw/**/*.csv*
 data/processed/**/*.parquet
 data/processed/**/*.csv
+
+# Exception: the extracted GFS point values are kept. The rule above exists
+# because the observation sources are hundreds of megabytes and re-downloading
+# them is quick; these are the opposite. Each run is about 28 KB on disk but
+# costs roughly 0.76 GB of transfer and several minutes to rebuild, because a
+# GFS file is 520 MB and only one grid point of it is wanted. Committing them
+# means nobody on the team fetches the same bytes twice, and CI could use them.
+!data/raw/noaa_gfs/
+!data/raw/noaa_gfs/*.csv
