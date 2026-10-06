@@ -103,25 +103,6 @@ def rolling_cutoffs(frame: pd.DataFrame) -> list[pd.Timestamp]:
     return folds
 
 
-def trainable_cutoffs(
-    frame: pd.DataFrame, panel: pd.DataFrame, cutoffs: Sequence[pd.Timestamp]
-) -> list[pd.Timestamp]:
-    """Covered folds whose covariate history spans a year (as in PR #7)."""
-    trainable: list[pd.Timestamp] = []
-    for cutoff in forecast_covariates.covered_cutoffs(panel, cutoffs, HORIZON):
-        history = frame.loc[frame[prophet_frame.DS] < cutoff]
-        joined = forecast_covariates.attach_available(history, panel, cutoff)
-        usable = joined.dropna(
-            subset=[forecast_covariates.PREFIX + "temperature_c", prophet_frame.Y]
-        )
-        if usable.empty:
-            continue
-        span = usable[prophet_frame.DS].max() - usable[prophet_frame.DS].min()
-        if span >= pd.Timedelta(days=MINIMUM_TRAINING_DAYS):
-            trainable.append(cutoff)
-    return trainable
-
-
 # --- scoring -----------------------------------------------------------------
 
 
@@ -264,13 +245,17 @@ def run(*, rebuild_panel: bool = False, overwrite: bool = False) -> dict[str, Pa
             run_fold_set(
                 frame,
                 "gfs_seasonal",
-                trainable_cutoffs(frame, panel, seasonal),
+                forecast_covariates.trainable_cutoffs(
+                    frame, panel, seasonal, HORIZON, MINIMUM_TRAINING_DAYS
+                ),
                 covariate,
             ),
             run_fold_set(
                 frame,
                 "gfs_rolling",
-                trainable_cutoffs(frame, panel, rolling),
+                forecast_covariates.trainable_cutoffs(
+                    frame, panel, rolling, HORIZON, MINIMUM_TRAINING_DAYS
+                ),
                 covariate,
             ),
         ],
